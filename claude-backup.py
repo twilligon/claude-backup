@@ -8,8 +8,7 @@
 
 # SPDX-License-Identifier: CC0-1.0
 
-# TODO: handle chat renaming
-# TODO: compare file mtimes for updates instead of using json list
+# TODO: compare file mtimes for updates instead of using json list (ehh)
 # TODO: factor "cache" (which is really anything but) out of Client
 
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
@@ -33,13 +32,17 @@ def uuid(obj):
 
 
 def name(obj):
-    return f"{uuid(obj)} ({obj["name"]})" if obj.get("name") else uuid(obj)
+    return f"{uuid(obj)} ({obj["name"]})" if name in obj else uuid(obj)
 
 
-def cache(obj):
-    trans = {ord(c): ord("_") for c in '<>:"|?*/\\ \t\n\r'}
-    name = obj.get("name", "").translate(trans)
-    return f"{name}-{uuid(obj)}" if name else uuid(obj)
+def cache(*parts):
+    TRANS = {ord(c): ord("_") for c in '<>:"|?*/\\ \t\n\r'}
+    return os.path.join(
+        *(
+            f"{p["name"].translate(TRANS)}-{uuid(p)}" if name in p else uuid(p)
+            for p in parts
+        )
+    )
 
 
 @dataclass(slots=True)
@@ -235,12 +238,20 @@ def main():
         ):
             print(name(chat))
 
+            if old := chats.get(uuid(chat)):
+                with suppress(FileNotFoundError, OSError):
+                    os.rename(
+                        os.path.join(client.backup_dir, f"{cache(org, old)}.json"),
+                        os.path.join(client.backup_dir, f"{cache(org, chat)}.json"),
+                    )
+
             client.refresh(
                 f"organizations/{uuid(org)}/chat_conversations/{uuid(chat)}"
                 "?tree=True&rendering_mode=messages&render_all_tools=true",  # TODO: try rendering_mode=raw ?
-                os.path.join(cache(org), cache(chat)),
+                cache(org, chat),
             )
 
+        # NOTE: cached chats list is unsorted! but this is fine for us
         client.cache(cache(org), list(chats.values()))
 
 
