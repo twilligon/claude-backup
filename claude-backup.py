@@ -37,7 +37,8 @@ def name(obj):
 
 
 def cache(obj):
-    name = obj.get("name", "").translate(str.maketrans('<>:"|?*/\\', "_________"))
+    trans = {ord(c): ord("_") for c in '<>:"|?*/\\ \t\n\r'}
+    name = obj.get("name", "").translate(trans)
     return f"{name}-{uuid(obj)}" if name else uuid(obj)
 
 
