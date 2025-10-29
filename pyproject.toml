@@ -10,11 +10,11 @@ license = "CC0-1.0"
 authors = [{name = "Ultrathinkers Anonymous", email = "ultrathink@twilligon.com"}]
 keywords = ["claude", "backup", "ai", "chat", "export", "archive"]
 dependencies = [
+    "aiohttp",
     "browser-cookie3",
     "fake-useragent",
     "platformdirs",
-    "requests",
-    "typeguard",
+    "yarl",
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
