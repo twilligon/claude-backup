@@ -1,8 +1,5 @@
 # `claude-backup`
-
-Backup Claude.ai chats to local JSON files.
-
-`claude-backup` fetches all your Claude.ai chat conversations and saves them as JSON files. It uses an incremental sync algorithm to efficiently update only changed or new conversations. The tool handles authentication via browser cookies or a session key, supports multiple organizations, and preserves chat metadata including renames.
+`claude-backup` is an unofficial, unsanctioned tool to backup Claude.ai chats to local JSON files. It uses an incremental sync algorithm to efficiently update only changed or new conversations. The tool handles authentication via browser cookies or a session key, supports multiple organizations, and preserves chat metadata including renames.
 
 ## Features
 

@@ -1,9 +1,12 @@
+"""Backup Claude.ai chats"""
+
 # pyright: reportAny=false, reportExplicitAny=false, reportUnusedCallResult=false
 
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
 from collections import defaultdict
 from collections.abc import (
     AsyncGenerator,
+    AsyncIterator,
     Awaitable,
     Callable,
     Iterable,
@@ -38,6 +41,7 @@ Json: TypeAlias = dict[str, "Json"] | list["Json"] | str | int | float | bool | 
 JsonD: TypeAlias = dict[str, Json]
 
 T = TypeVar("T")
+T_APIObject = TypeVar("T_APIObject", bound="APIObject")
 
 
 @dataclass(slots=True)
@@ -168,18 +172,45 @@ class Store:
         new_file.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         old_file.rename(new_file)
 
+    def delete(self, path: Path) -> None:
+        file = self.store_dir / path.with_suffix(".json")
+        with suppress(FileNotFoundError):
+            file.unlink()
+
+        parent = file.parent
+        while parent != self.store_dir and parent.exists():
+            try:
+                parent.rmdir()
+                parent = parent.parent
+            except OSError:
+                break
+
 
 class APIObject:
-    __slots__ = ("client", "store", "_data")
+    @property
+    def client(self) -> Client:
+        return self._client
 
-    client: Client
-    store: Store
-    _data: Json
+    @property
+    def store(self) -> Store:
+        return self._store
 
-    def __init__(self, client: Client, store: Store, data: Json):
-        self.client = client
-        self.store = store
+    def set_data(self: T_APIObject, data: Json) -> T_APIObject:
         self._data = data
+        return self
+
+    def get_data(self) -> Json:
+        return self._data
+
+    @classmethod
+    async def load(
+        cls, *args, api_path: str | None = None, store_path: Path | None = None
+    ):
+        obj = cls(*args)
+        api_path = api_path or obj.api_path()
+        store_path = store_path or obj.store_path()
+        obj.set_data(obj.store.load(store_path) or await obj.client.refresh(api_path))
+        return obj
 
     def api_path(self) -> str:
         raise NotImplementedError
@@ -187,30 +218,20 @@ class APIObject:
     def store_path(self) -> Path:
         raise NotImplementedError
 
-    def update(self, data: Json) -> None:
-        self._data = data
-        self.save()
-
-    async def refresh(self) -> None:
-        self.update(await self.client.refresh(self.api_path()))
+    async def refresh(self: T_APIObject) -> T_APIObject:
+        return self.set_data(await self.client.refresh(self.api_path()))
 
     def save(self) -> None:
-        self.store.save(self.store_path(), self._data)
-
-    def load(self) -> bool:
-        data = self.store.load(self.store_path())
-        if data is not None:
-            self._data = data
-            return True
-        return False
+        self.store.save(self.store_path(), self.get_data())
 
     def __hash__(self) -> int:
         return hash(json.dumps(self._data, sort_keys=True, check_circular=False))
 
     def __eq__(self, other: object) -> bool:
-        if isinstance(other, APIObject) and type(self) is type(other):
+        if type(self) is type(other):
             return self._data == other._data
-        return NotImplemented
+        else:
+            return NotImplemented
 
 
 class Nameable(APIObject):
@@ -228,6 +249,7 @@ class Nameable(APIObject):
 
     @property
     def name(self) -> str | None:
+        # api seems to use {"name": ""} to mean {"name": null}
         return cast(str, self._data.get("name")) or None
 
     def slug(self) -> str:
@@ -242,17 +264,21 @@ class Nameable(APIObject):
 
 
 class Chat(Nameable):
-    __slots__ = ("chat_conversations",)
+    __slots__ = ("chat_conversations", "_data")
 
     def __init__(
         self,
-        client: Client,
-        store: Store,
-        chat_conversations: "ChatConversations",
-        data: JsonD,
+        chat_conversations: "ChatConversationsList",
     ):
-        super().__init__(client, store, data)
         self.chat_conversations = chat_conversations
+
+    @property
+    def client(self) -> Client:
+        return self.chat_conversations.client
+
+    @property
+    def store(self) -> Store:
+        return self.chat_conversations.store
 
     def api_path(self) -> str:
         return (
@@ -268,83 +294,100 @@ class Chat(Nameable):
 
     def __eq__(self, other: object) -> bool:
         return (
-            isinstance(other, Chat)
-            and super().__eq__(other)
+            super().__eq__(other)
             and self.chat_conversations == other.chat_conversations
         )
 
 
 class ChatConversationsEntry(Nameable):
-    __slots__ = ("chat_conversations",)
+    __slots__ = ("chat_conversations", "_data")
 
     def __init__(
         self,
-        client: Client,
-        store: Store,
-        chat_conversations: "ChatConversations",
-        data: JsonD,
+        chat_conversations: "ChatConversationsList",
     ):
-        super().__init__(client, store, data)
         self.chat_conversations = chat_conversations
 
-    def store_path(self) -> Path:
+    @property
+    def client(self) -> Client:
+        return self.chat_conversations.client
+
+    @property
+    def store(self) -> Store:
+        return self.chat_conversations.store
+
+    def chat_api_path(self) -> str:
+        return (
+            f"{self.chat_conversations.api_path()}/{self.uuid}"
+            + "?tree=True&rendering_mode=messages&render_all_tools=true"
+        )
+
+    def chat_store_path(self) -> Path:
         return self.chat_conversations.store_path() / self.slug()
 
     async def chat(self) -> Chat:
-        data = self.store.load(self.store_path())
-        if data is None:
-            data = await self.client.refresh(
-                f"{self.chat_conversations.api_path()}/{self.uuid}"
-                + "?tree=True&rendering_mode=messages&render_all_tools=true"
-            )
-            chat = Chat(
-                self.client, self.store, self.chat_conversations, cast(JsonD, data)
-            )
-            chat.save()
-            return chat
-        return Chat(self.client, self.store, self.chat_conversations, cast(JsonD, data))
+        return await Chat.load(
+            self.chat_conversations,
+            api_path=self.chat_api_path(),
+            store_path=self.chat_store_path(),
+        )
 
     def __hash__(self) -> int:
         return hash((super().__hash__(), self.chat_conversations))
 
     def __eq__(self, other: object) -> bool:
         return (
-            isinstance(other, ChatConversationsEntry)
-            and super().__eq__(other)
+            super().__eq__(other)
             and self.chat_conversations == other.chat_conversations
         )
 
 
-class ChatConversations(APIObject):
-    __slots__ = ("organization", "_unseen")
+class ChatConversationsList(APIObject):
+    __slots__ = ("organization", "unseen", "_data")
 
     _data: dict[str, JsonD]  # pyright: ignore[reportIncompatibleVariableOverride]
-    _unseen: int
+    unseen: int
 
-    def __init__(
-        self, client: Client, store: Store, organization: "Organization", data: Json
-    ):
-        # Convert list (reverse chronological from API) to dict (forward chronological)
-        entries_list = cast(list[JsonD], data)
-        entries_dict = {
-            cast(str, entry["uuid"]): entry for entry in reversed(entries_list)
-        }
-        super().__init__(client, store, entries_dict)
+    def __init__(self, organization: "Organization"):
         self.organization = organization
-        self._unseen = 0
+        self.unseen = 0
+        self._data = {}
+
+    @property
+    def client(self) -> Client:
+        return self.organization.client
+
+    @property
+    def store(self) -> Store:
+        return self.organization.store
+
+    def api_path(self) -> str:
+        return f"{self.organization.api_path()}/chat_conversations"
 
     def store_path(self) -> Path:
         return self.organization.store_path() / "chat_conversations"
 
-    def save(self) -> None:
-        # Convert dict (forward chronological) back to list (reverse chronological)
-        data_as_list = list(reversed(list(self._data.values())))
-        self.store.save(self.store_path(), data_as_list)
+    def set_data(self, data: Json) -> "ChatConversationsList":
+        # convert list (reverse chronological from API) to dict (forward chronological)
+        entries_list = cast(list[JsonD], data)
+        self._data = {
+            cast(str, entry["uuid"]): entry for entry in reversed(entries_list)
+        }
+        return self
+
+    def get_data(self) -> Json:
+        # convert dict (forward chronological) back to list (reverse chronological)
+        return list(reversed(self._data.values()))
+
+    def entry(self, uuid: str) -> ChatConversationsEntry | None:
+        if data := self._data.get(uuid):
+            return ChatConversationsEntry(self).set_data(data)
+        return None
 
     def cached_entries(self) -> Iterator[ChatConversationsEntry]:
-        # Yield in reverse chronological order (newest first)
-        for chat in reversed(list(self._data.values())):
-            yield ChatConversationsEntry(self.client, self.store, self, chat)
+        # yield in reverse chronological order (newest first)
+        for chat_data in reversed(self._data.values()):
+            yield ChatConversationsEntry(self).set_data(chat_data)
 
     async def entries(self) -> AsyncGenerator[ChatConversationsEntry, None]:
         seen = set()
@@ -361,11 +404,15 @@ class ChatConversations(APIObject):
         self, page_size: int = 20
     ) -> AsyncGenerator[ChatConversationsEntry, None]:
         # "sliding window sync" (chat_conversations is recently-modified-first)
-
         new: dict[str, JsonD] = {}
+
         offset = 0
-        limit = self._unseen + 1 if self._unseen else page_size
-        self._unseen = 0
+        limit = self.unseen + 1 if self.unseen else page_size
+        self.unseen = 0
+
+        if not limit:
+            return
+
         while True:
             page = cast(
                 list[JsonD],
@@ -392,9 +439,9 @@ class ChatConversations(APIObject):
                     # of course this can happen multiple times, and in fact the
                     # number of times it happens is exactly how many new chats
                     # we expect would be at offset 0 were we to fetch again. so
-                    # update self._unseen as a hint to future new_entries calls
-                    # that there are likely exactly self._unseen new or changed
-                    self._unseen += 1
+                    # update self.unseen as a hint to future new_entries calls
+                    # that there are likely exactly self.unseen new or changed
+                    self.unseen += 1
 
                     # ...but if the above hypothesis is wrong for some perverse
                     # reason like all the chats up until now being rewritten in
@@ -415,11 +462,11 @@ class ChatConversations(APIObject):
                     break
 
                 new[uuid] = chat
-                yield ChatConversationsEntry(self.client, self.store, self, chat)
+                yield ChatConversationsEntry(self).set_data(chat)
 
             # we *ought* to break from this loop by seeing something from prior
             # refreshes, but just in case e.g. all chats in self._data are gone
-            # on claude.ai (or more likely moved/counted in self._unseen) we're
+            # on claude.ai (or more likely moved/counted in self.unseen) we're
             # also definitely done if they ran out of items for this page
             if done or len(page) < limit:
                 break
@@ -433,31 +480,27 @@ class ChatConversations(APIObject):
         self._data.update(reversed(new.items()))
         self.save()
 
-    async def refresh(self) -> None:
+    async def refresh(self) -> "ChatConversationsList":
         async for _ in self.new_entries():
             pass
+        return self
 
     def __len__(self) -> int:
         return len(self._data)
-
-    def __iter__(self) -> Iterator[ChatConversationsEntry]:
-        # Iterate in reverse chronological order (API order)
-        for chat_data in reversed(list(self._data.values())):
-            yield ChatConversationsEntry(self.client, self.store, self, chat_data)
 
     def __hash__(self) -> int:
         return hash((super().__hash__(), self.organization))
 
     def __eq__(self, other: object) -> bool:
-        return (
-            isinstance(other, ChatConversations)
-            and super().__eq__(other)
-            and self.organization == other.organization
-        )
+        return super().__eq__(other) and self.organization == other.organization
 
 
 class Organization(Nameable):
-    __slots__ = ()
+    __slots__ = ("_client", "_store", "_data")
+
+    def __init__(self, client: Client, store: Store):
+        self._client = client
+        self._store = store
 
     def api_path(self) -> str:
         return f"organizations/{self.uuid}"
@@ -469,41 +512,43 @@ class Organization(Nameable):
     def capabilities(self) -> list[str]:
         return cast(list[str], self._data["capabilities"])
 
-    async def chat_conversations(self) -> ChatConversations:
-        data = self.store.load(self.store_path() / "chat_conversations")
-        if data is None:
-            data = await self.client.refresh(f"{self.api_path()}/chat_conversations")
-        return ChatConversations(self.client, self.store, self, data)
+    async def chat_conversations(self) -> ChatConversationsList:
+        return await ChatConversationsList.load(self)
 
 
 class Membership(APIObject):
-    __slots__ = ("account",)
+    __slots__ = ("account", "_data")
 
-    def __init__(self, client: Client, store: Store, account: "Account", data: Json):
-        super().__init__(client, store, data)
+    def __init__(self, account: "Account"):
         self.account = account
 
     @property
+    def client(self) -> Client:
+        return self.account.client
+
+    @property
+    def store(self) -> Store:
+        return self.account.store
+
+    @property
     def organization(self) -> Organization:
-        return Organization(
-            self.client,
-            self.store,
-            cast(JsonD, cast(JsonD, self._data)["organization"]),
+        return Organization(self.client, self.store).set_data(
+            cast(JsonD, cast(JsonD, self._data)["organization"])
         )
 
     def __hash__(self) -> int:
         return hash((super().__hash__(), self.account))
 
     def __eq__(self, other: object) -> bool:
-        return (
-            isinstance(other, Membership)
-            and super().__eq__(other)
-            and self.account == other.account
-        )
+        return super().__eq__(other) and self.account == other.account
 
 
 class Account(Nameable):
-    __slots__ = ()
+    __slots__ = ("_client", "_store", "_data")
+
+    def __init__(self, client: Client, store: Store):
+        self._client = client
+        self._store = store
 
     def api_path(self) -> str:
         return "account"
@@ -512,8 +557,8 @@ class Account(Nameable):
         return Path("account")
 
     def memberships(self) -> Iterator[Membership]:
-        for m in cast(list[JsonD], self._data["memberships"]):
-            yield Membership(self.client, self.store, self, m)
+        for m_data in cast(list[JsonD], self._data["memberships"]):
+            yield Membership(self).set_data(m_data)
 
 
 def truncate(s: str, max_len: int) -> str:
@@ -542,14 +587,19 @@ class Syncer:
     store: Store
     connections: int = 6
     success_delay: float = 0.1
+    tty: bool = field(default_factory=sys.stdout.isatty)
 
-    async def as_completed(
-        self, awaitables: Iterable[Awaitable[T]]
+    async def _as_completed(
+        self, awaitables: AsyncIterator[Awaitable[T]]
     ) -> AsyncGenerator[asyncio.Task[T], None]:
-        awaitables_iter = iter(awaitables)
-        pending: set[asyncio.Task[T]] = set(
-            map(asyncio.ensure_future, islice(awaitables_iter, self.connections))
-        )
+        pending: set[asyncio.Task[T]] = set()
+
+        for _ in range(self.connections):
+            try:
+                awaitable = await anext(awaitables)
+                pending.add(asyncio.ensure_future(awaitable))
+            except StopAsyncIteration:
+                break
 
         try:
             while pending:
@@ -562,9 +612,12 @@ class Syncer:
 
                     await asyncio.sleep(self.success_delay)
 
-                    if next_task := next(awaitables_iter, None):
-                        pending.add(asyncio.ensure_future(next_task))
-        except BaseException:  # catch *everything* so we can cancel tasks
+                    try:
+                        awaitable = await anext(awaitables)
+                        pending.add(asyncio.ensure_future(awaitable))
+                    except StopAsyncIteration:
+                        pass
+        except BaseException:
             for task in pending:
                 task.cancel()
 
@@ -572,24 +625,35 @@ class Syncer:
 
             raise
 
-    async def gather(self, *awaitables: Awaitable[T]) -> list[T]:
-        awaitables_list = list(awaitables)
+    def as_completed(
+        self, awaitables: Iterable[Awaitable[T]] | AsyncIterator[Awaitable[T]]
+    ) -> AsyncGenerator[asyncio.Task[T], None]:
+        async def asyncify(iterable):
+            for item in iterable:
+                yield item
 
-        async with aclosing(self.as_completed(awaitables_list)) as gen:
+        if hasattr(awaitables, "__anext__"):
+            return self._as_completed(awaitables)
+        else:
+            return self._as_completed(asyncify(awaitables))
+
+    async def gather(self, *awaitables: Awaitable[T]) -> list[T]:
+        tasks_list = [asyncio.ensure_future(a) for a in awaitables]
+
+        async with aclosing(self.as_completed(tasks_list)) as gen:
             async for task in gen:
                 await task
 
-        # gather all, in original order; we awaited above so this is instant
-        return await asyncio.gather(*awaitables_list)
+        return [task.result() for task in tasks_list]
 
-    async def get_chat_lists(self) -> list[AsyncIterator[ChatConversationsEntry]]:
-        account = Account(self.client, self.store, await self.client.refresh("account"))
+    async def get_chat_conversations_lists(self) -> list[ChatConversationsList]:
+        account = await Account.load(self.client, self.store)
         account.save()
 
-        async def get_entries(organization):
-            return (await organization.chat_conversations()).entries()
+        async def get_chat_conversations_list(organization):
+            return await organization.chat_conversations()
 
-        entry_iterator_fetches = []
+        chat_conversations_list_fetches = []
         for membership in account.memberships():
             organization = membership.organization
             if "chat" not in organization.capabilities:
@@ -597,32 +661,48 @@ class Syncer:
                 continue
 
             print(f"Fetching chats for organization {organization}")
-            entry_iterator_fetches.append(get_entries(organization))
+            chat_conversations_list_fetches.append(
+                get_chat_conversations_list(organization)
+            )
 
-        return await self.gather(*entry_iterator_fetches)
+        return await self.gather(*chat_conversations_list_fetches)
+
+    def print_chat_entry(self, entry):
+        name = entry.name or ""
+        if self.tty:
+            try:
+                width = os.get_terminal_size().columns
+            except OSError:
+                width = 80
+            name = truncate(name, width - 36 - 4)
+        print(f"{entry.uuid}\t{name}")
 
     async def get_chats(self) -> AsyncIterator[Awaitable[Chat]]:
-        chat_lists = await self.get_chat_lists()
+        chat_conversations_lists = await self.get_chat_conversations_lists()
 
-        tty = sys.stdout.isatty()
-        async with aclosing(aroundrobin(*chat_lists)) as entries:
+        async with aclosing(
+            aroundrobin(*(ccl.entries() for ccl in chat_conversations_lists))
+        ) as entries:
             async for entry in entries:
-                name = entry.name or ""
-
-                if tty:
-                    try:
-                        width = os.get_terminal_size().columns
-                    except OSError:
-                        width = 80
-                    name = truncate(name, width - 36 - 4)  # width - uuid - tab
-                print(f"{entry.uuid}\t{name}")
+                self.print_chat_entry(entry)
                 yield entry.chat()
 
+        while needs_refresh := [ccl for ccl in chat_conversations_lists if ccl.unseen]:
+            async with aclosing(
+                aroundrobin(*(ccl.new_entries(page_size=1) for ccl in needs_refresh))
+            ) as entries:
+                async for entry in entries:
+                    self.print_chat_entry(entry)
+                    yield entry.chat()
+
     async def sync_all(self) -> None:
-        async with aclosing(self.get_chats()) as chats:
-            async with aclosing(self.as_completed(chats)) as tasks:
-                async for task in tasks:
-                    await task
+        async with aclosing(self.as_completed(self.get_chats())) as tasks:
+            async for task in tasks:
+                chat = await task
+                old_entry = chat.chat_conversations.entry(chat.uuid)
+                chat.save()
+                if old_entry and old_entry.slug() != chat.slug():
+                    chat.store.delete(old_entry.chat_store_path())
 
 
 @dataclass(slots=True)
@@ -658,6 +738,12 @@ async def _main() -> None:
         formatter_class=ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
+        "-v",
+        "--version",
+        action="version",
+        version=f"%(prog)s {__version__}",
+    )
+    parser.add_argument(
         "backup_dir",
         nargs="?",
         default=DefaultPath(user_data_dir("claude-backup")),
@@ -674,6 +760,7 @@ async def _main() -> None:
         "-s",
         "--success-delay",
         type=float,
+        metavar="DELAY",
         default=default(Syncer, "success_delay"),
         help="Delay after successful request in seconds",
     )
@@ -687,12 +774,14 @@ async def _main() -> None:
     parser.add_argument(
         "--min-retry-delay",
         type=float,
+        metavar="DELAY",
         default=default(Client, "min_retry_delay"),
         help="Minimum retry delay in seconds",
     )
     parser.add_argument(
         "--max-retry-delay",
         type=float,
+        metavar="DELAY",
         default=default(Client, "max_retry_delay"),
         help="Maximum retry delay in seconds",
     )
@@ -725,7 +814,8 @@ async def _main() -> None:
 
 
 def main() -> None:
-    asyncio.run(_main())
+    with suppress(KeyboardInterrupt):
+        asyncio.run(_main())
 
 
 if __name__ == "__main__":
