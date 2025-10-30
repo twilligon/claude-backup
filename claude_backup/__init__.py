@@ -1,4 +1,4 @@
-# pyright: reportExplicitAny=false, reportAny=false, reportUnusedCallResult=false
+# pyright: reportAny=false, reportExplicitAny=false, reportUnusedCallResult=false
 
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
 from collections import defaultdict
@@ -12,9 +12,10 @@ from collections.abc import (
 from dataclasses import dataclass, field
 from itertools import chain, islice, zip_longest
 from contextlib import suppress
-from tempfile import TemporaryDirectory
+from pathlib import Path
+from tempfile import NamedTemporaryFile, TemporaryDirectory
 from types import TracebackType
-from typing import Any, Literal, TypeAlias, TypedDict, TypeVar, cast
+from typing import Any, ClassVar, TypeAlias, TypedDict, TypeVar, cast
 from uuid import UUID
 import asyncio
 import json
@@ -28,12 +29,9 @@ from aiohttp import ClientError, ClientSession, CookieJar
 from yarl import URL
 import browser_cookie3  # pyright: ignore[reportMissingTypeStubs]
 
-# TODO: compare file mtimes for updates instead of using json list (ehh)
-# TODO: factor "cache" (which is really anything but) out of Client
-
 __version__ = "0.1.5"
 
-__all__ = ("__version__", "main", "Client")
+__all__ = ("__version__", "main", "Client", "Store")
 
 Json: TypeAlias = dict[str, "Json"] | list["Json"] | str | int | float | bool | None
 
@@ -45,97 +43,37 @@ def _cast(_typ: type[T], obj: Any) -> T:
     return cast(T, cast(object, obj))
 
 
-class _ChatRequired(TypedDict):
+class _APIObjectRequired(TypedDict):
     uuid: str
 
 
-class Chat(_ChatRequired, total=False):
+class APIObject(_APIObjectRequired, total=False):
     name: str
 
 
-class _OrganizationRequired(TypedDict):
-    uuid: str
+class Chat(APIObject):
+    pass
+
+
+class Organization(APIObject):
     capabilities: list[str]
 
 
-class Organization(_OrganizationRequired, total=False):
-    name: str
-
-
-class Membership(TypedDict):
+class Membership(APIObject):
     organization: Organization
 
 
-class Account(TypedDict):
+class Account(APIObject):
     memberships: list[Membership]
 
 
+PathFragment: TypeAlias = APIObject | str
+
 TTY = sys.stdout.isatty()
 
-# migrate from unknown versions by not migrating anything, i.e. starting over
-MigrationFunc: TypeAlias = Callable[[str, str], None]
-MIGRATIONS: defaultdict[str | None, tuple[str, MigrationFunc]] = defaultdict(
-    lambda: (__version__, lambda old, new: None)
-)
 
-
-def initialize_cache(backup_dir: str) -> None:
-    if not os.path.exists(backup_dir):
-        os.makedirs(backup_dir, mode=0o700, exist_ok=True)
-        with open(os.path.join(backup_dir, "version"), "w") as f:
-            f.write(__version__)
-        return
-
-    version = None
-    with suppress(FileNotFoundError), open(os.path.join(backup_dir, "version")) as f:
-        version = f.read().strip()
-
-    if version == __version__:
-        return
-
-    with (
-        # TemporaryDirectory uses 0700 perms, which we want for private chats
-        TemporaryDirectory(
-            prefix=f"{os.path.basename(backup_dir)}-", dir=os.path.dirname(backup_dir)
-        ) as old_backup_dir,
-        TemporaryDirectory(
-            prefix=f"{os.path.basename(backup_dir)}-", dir=os.path.dirname(backup_dir)
-        ) as new_backup_dir,
-    ):
-        shutil.copytree(backup_dir, old_backup_dir, dirs_exist_ok=True)
-
-        while version != __version__:
-            version, migrate_step = MIGRATIONS[version]
-            migrate_step(old_backup_dir, new_backup_dir)
-            old_backup_dir, new_backup_dir = new_backup_dir, old_backup_dir
-            shutil.rmtree(new_backup_dir)
-            os.makedirs(new_backup_dir, mode=0o700)
-
-        with TemporaryDirectory(
-            prefix=f"{os.path.basename(backup_dir)}-", dir=os.path.dirname(backup_dir)
-        ) as adjacent_temp:
-            shutil.copytree(old_backup_dir, adjacent_temp, dirs_exist_ok=True)
-            shutil.rmtree(backup_dir)
-            os.rename(adjacent_temp, backup_dir)
-
-    with open(os.path.join(backup_dir, "version"), "w") as f:
-        print(__version__, file=f)
-
-
-def uuid(obj: Chat | Organization) -> str:
+def uuid(obj: APIObject) -> str:
     return str(UUID(obj["uuid"]))  # round trip to throw on invalid uuid
-
-
-FILENAME_TRANS = {ord(c): ord("_") for c in '<>:"|?*/\\ \t\n\r'}
-
-
-def cache(*parts: Chat | Organization) -> str:
-    name: Callable[[Chat | Organization], str] = lambda p: p.get("name", "").translate(
-        FILENAME_TRANS
-    )
-    return os.path.join(
-        *(f"{name(p)}-{uuid(p)}" if name(p) else uuid(p) for p in parts)
-    )
 
 
 def truncate(s: str, max_len: int) -> str:
@@ -151,61 +89,108 @@ def get_terminal_width() -> int:
     return 80
 
 
-def round_robin(*iterables: Iterable[T]) -> Iterator[T]:
-    sentinel = object()
-    yield from filter(  # pyright: ignore[reportReturnType]
-        lambda x: x is not sentinel,
-        chain.from_iterable(zip_longest(*iterables, fillvalue=sentinel)),
-    )
+@dataclass(slots=True)
+class Store:
+    # migrate from unknown versions by not migrating anything, i.e. starting over
+    MIGRATIONS: ClassVar[
+        defaultdict[str | None, tuple[str, Callable[[str, str], None]]]
+    ] = defaultdict(lambda: (__version__, lambda old, new: None))
+    FILENAME_TRANS: ClassVar[dict[int, int]] = {
+        ord(c): ord("_") for c in '<>:"|?*/\\ \t\n\r'
+    }
 
+    store_dir: Path
+    force_refresh: bool = False
 
-async def gather_ratelimited(
-    *awaitables: Awaitable[T],
-    max_concurrent: int,
-    delay: float = 0.0,
-) -> list[T]:
-    awaitables_list = list(awaitables)
+    def __post_init__(self):
+        if not self.store_dir.exists():
+            self.store_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+            (self.store_dir / "version").write_text(__version__)
+            return
 
-    awaitables_iter = iter(awaitables_list)
-    pending: set[asyncio.Task[T]] = set(
-        map(asyncio.ensure_future, islice(awaitables_iter, max_concurrent))
-    )
+        version = None
+        with suppress(FileNotFoundError):
+            version = (self.store_dir / "version").read_text().strip()
 
-    try:
-        while pending:
-            done, pending = await asyncio.wait(
-                pending, return_when=asyncio.FIRST_COMPLETED
-            )
+        if version == __version__:
+            return
 
-            for task in done:
-                await task
+        with (
+            # TemporaryDirectory uses 0700 perms, which we want for private chats
+            TemporaryDirectory(
+                prefix=f"{self.store_dir.name}-",
+                dir=self.store_dir.parent,
+            ) as old_store_dir,
+            TemporaryDirectory(
+                prefix=f"{self.store_dir.name}-",
+                dir=self.store_dir.parent,
+            ) as new_store_dir,
+        ):
+            shutil.copytree(self.store_dir, old_store_dir, dirs_exist_ok=True)
 
-                await asyncio.sleep(delay)
+            while version != __version__:
+                version, migrate_step = self.MIGRATIONS[version]
+                migrate_step(old_store_dir, new_store_dir)
+                old_store_dir, new_store_dir = new_store_dir, old_store_dir
+                shutil.rmtree(new_store_dir)
+                Path(new_store_dir).mkdir(mode=0o700)
 
-                if next_task := next(awaitables_iter, None):
-                    pending.add(asyncio.ensure_future(next_task))
+            with TemporaryDirectory(
+                prefix=f"{self.store_dir.name}-",
+                dir=self.store_dir.parent,
+            ) as adjacent_temp:
+                shutil.copytree(old_store_dir, adjacent_temp, dirs_exist_ok=True)
+                shutil.rmtree(self.store_dir)
+                Path(adjacent_temp).rename(self.store_dir)
 
-        # gather all, in original order
-        return await asyncio.gather(*awaitables_list)
-    except:
-        for task in pending:
-            task.cancel()
+        (self.store_dir / "version").write_text(__version__)
 
-        await asyncio.gather(*pending, return_exceptions=True)
+    def _path(self, *path: PathFragment) -> Path:
+        def _frag(p: PathFragment) -> str:
+            if isinstance(p, str):
+                return p
+            else:
+                name = p.get("name", "").translate(self.FILENAME_TRANS)
+                return f"{name}-{uuid(p)}" if name else uuid(p)
 
-        raise
+        cache_file = self.store_dir / Path(*map(_frag, path)).with_suffix(".json")
+        cache_file.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        return cache_file
+
+    def save(self, data: Json, *path: PathFragment) -> None:
+        if not path:
+            return
+        cache_file = self._path(*path)
+        with NamedTemporaryFile(
+            "w",
+            prefix=f"{cache_file.name}-",
+            dir=cache_file.parent,
+        ) as f:
+            json.dump(data, f)
+            f.flush()
+            Path(f.name).rename(cache_file)
+
+    def load(self, *path: PathFragment) -> Json | None:
+        if self.force_refresh:
+            return None
+
+        cache_file = self._path(*path)
+        with suppress(FileNotFoundError, NotADirectoryError), cache_file.open() as f:
+            return cast(Json, json.load(f))
+
+    def rename(self, old: Iterable[PathFragment], new: Iterable[PathFragment]) -> None:
+        self._path(*old).rename(self._path(*new))
 
 
 @dataclass(slots=True)
 class Client:
-    backup_dir: str
+    store: Store
     session_key: str
     retries: int = 10
     min_retry_delay: float = 1.0
     max_retry_delay: float = 60.0
     success_delay: float = 0.1
     connections: int = 6
-    force_refresh: bool = False
     session: ClientSession = field(init=False)
     total: int = field(init=False, default=0)
     seen: int = field(init=False, default=0)
@@ -232,30 +217,40 @@ class Client:
         return await self.session.__aexit__(exc_type, exc_val, exc_tb)
 
     async def gather(self, *awaitables: Awaitable[T]) -> list[T]:
-        return await gather_ratelimited(
-            *awaitables,
-            max_concurrent=self.connections,
-            delay=self.success_delay,
+        awaitables_list = list(awaitables)
+
+        awaitables_iter = iter(awaitables_list)
+        pending: set[asyncio.Task[T]] = set(
+            map(asyncio.ensure_future, islice(awaitables_iter, self.connections))
         )
 
-    def cache(self, cache: str | Literal[False], data: Json) -> None:
-        if cache:
-            cache_file = os.path.join(self.backup_dir, f"{cache}.json")
-            os.makedirs(os.path.dirname(cache_file), mode=0o700, exist_ok=True)
-            temp_file = f"{cache_file}.new"
-            with open(os.open(temp_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as f:
-                json.dump(data, f)
-            os.rename(temp_file, cache_file)
+        try:
+            while pending:
+                done, pending = await asyncio.wait(
+                    pending, return_when=asyncio.FIRST_COMPLETED
+                )
 
-    def get_cached(self, cache: str | Literal[False]) -> Json | None:
-        if cache and not self.force_refresh:
-            cache_file = os.path.join(self.backup_dir, f"{cache}.json")
-            with suppress(FileNotFoundError, NotADirectoryError), open(cache_file) as f:
-                return json.load(f)
+                for task in done:
+                    await task
 
-    async def refresh(self, path: str, cache: str | bool = False) -> Json:
-        cache = path if cache is True else cache
+                    await asyncio.sleep(self.success_delay)
 
+                    if next_task := next(awaitables_iter, None):
+                        pending.add(asyncio.ensure_future(next_task))
+
+            # gather all, in original order
+            return await asyncio.gather(*awaitables_list)
+        except:
+            for task in pending:
+                task.cancel()
+
+            await asyncio.gather(*pending, return_exceptions=True)
+
+            raise
+
+    async def refresh(
+        self, path: str, cache: bool | Iterable[PathFragment] = False
+    ) -> Json:
         retry_delay = self.min_retry_delay
         r = None
         for _ in range(self.retries):
@@ -263,8 +258,11 @@ class Client:
                 f"https://claude.ai/api/{path}", allow_redirects=False
             )
             if r.ok:
-                data = await r.json()
-                self.cache(cache, data)
+                data = cast(Json, await r.json())
+                if cache is True:
+                    self.store.save(data, path)
+                elif cache:
+                    self.store.save(data, *cache)
                 return data
             else:
                 await asyncio.sleep(retry_delay)
@@ -272,10 +270,6 @@ class Client:
 
         r.raise_for_status()  # pyright: ignore[reportOptionalMemberAccess]
         raise ClientError  # pyright doesn't know above always throws. sad!
-
-    async def get(self, path: str, cache: str | bool = True) -> Json:
-        cache = path if cache is True else cache
-        return self.get_cached(cache) or await self.refresh(path, cache)
 
     def get_batch(
         self,
@@ -295,20 +289,13 @@ class Client:
                 print(progress)
 
             if old := chats.get(uuid(chat)):
-                with suppress(FileNotFoundError, OSError):
-                    os.rename(
-                        os.path.join(
-                            self.backup_dir, f"{cache(organization, old)}.json"
-                        ),
-                        os.path.join(
-                            self.backup_dir, f"{cache(organization, chat)}.json"
-                        ),
-                    )
+                with suppress(FileNotFoundError):
+                    self.store.rename((organization, old), (organization, chat))
 
             yield self.refresh(  # pyright: ignore[reportReturnType]
                 f"organizations/{uuid(organization)}/chat_conversations/{uuid(chat)}"
                 + f"?tree=True&rendering_mode=messages&render_all_tools=true",
-                cache(organization, chat),
+                cache=(organization, chat),
             )
 
     async def get_organization_batches(
@@ -321,12 +308,12 @@ class Client:
             yield self.get_batch(batch, organization, chats)
 
         # save in *reverse* chronological order (merely to match api)
-        self.cache(cache(organization), cast(Json, list(reversed(chats.values()))))
+        self.store.save(cast(Json, list(reversed(chats.values()))), organization)
 
     async def get_all_nth_batches(
         self,
     ) -> AsyncGenerator[Iterable[Awaitable[None]], None]:
-        account = _cast(Account, await self.get("account"))
+        account = _cast(Account, await self.refresh("account"))
         self.total = self.seen = 0
 
         per_organization_batches: list[
@@ -351,9 +338,7 @@ class Client:
 
             chats = {
                 chat["uuid"]: chat
-                for chat in _cast(
-                    list[Chat], self.get_cached(cache(organization)) or ()
-                )
+                for chat in _cast(list[Chat], self.store.load(organization) or ())
             }
             self.total += len(chats)
             self.seen += len(chats)
@@ -373,8 +358,10 @@ class Client:
             yield batches  # pyright: ignore[reportReturnType]
 
     async def get_batches(self) -> AsyncGenerator[Iterator[Awaitable[None]], None]:
+        sentinel = object()
         async for nth_batches in self.get_all_nth_batches():
-            yield round_robin(*nth_batches)  # pyright: ignore[reportArgumentType]
+            # round robin across batches when yielded object is iterated over
+            yield filter(None, chain.from_iterable(zip_longest(*nth_batches)))
 
     async def get_all(self) -> None:
         async for batch in self.get_batches():
@@ -404,6 +391,7 @@ class Client:
             page = _cast(
                 list[Chat], await self.refresh(f"{path}?limit={limit}&offset={offset}")
             )
+            item = None
             for item in page:
                 if batch_item := batch.get(key(item)):
                     # each time we see an item in two different pages, i.e. if
@@ -426,11 +414,7 @@ class Client:
             # prior batch, but just in case e.g. all items in `items` have
             # since been deleted (or moved/are counted in new_items), we're
             # also definitely done if they ran out of items for this page
-            if (
-                len(page) >= limit
-                and key(item)  # pyright: ignore[reportPossiblyUnboundVariable]
-                not in items
-            ):
+            if len(page) >= limit and item and key(item) not in items:
                 offset += limit
                 limit *= 2
                 continue
@@ -456,10 +440,10 @@ class DefaultPath:
     path: str
 
     def __str__(self):  # pyright: ignore[reportImplicitOverride]
-        home = os.path.expanduser("~")
-        if self.path.startswith(home):
-            return f"~{self.path[len(home):]}"
-        return self.path
+        try:
+            return f"~/{Path(self.path).relative_to(Path.home())}"
+        except ValueError:
+            return self.path
 
 
 def get_session_key() -> str:
@@ -531,10 +515,18 @@ async def _main() -> None:
     if isinstance(args.backup_dir, DefaultPath):
         args.backup_dir = args.backup_dir.path
 
-    initialize_cache(args.backup_dir)
+    store = Store(store_dir=Path(args.backup_dir), force_refresh=args.force_refresh)
 
     session_key = os.environ.get("CLAUDE_SESSION_KEY") or get_session_key()
-    async with Client(session_key=session_key, **vars(args)) as client:
+    async with Client(
+        store=store,
+        session_key=session_key,
+        retries=args.retries,
+        min_retry_delay=args.min_retry_delay,
+        max_retry_delay=args.max_retry_delay,
+        success_delay=args.success_delay,
+        connections=args.connections,
+    ) as client:
         await client.get_all()
 
 
