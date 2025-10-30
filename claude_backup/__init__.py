@@ -30,7 +30,7 @@ from aiohttp import ClientError, ClientSession, CookieJar
 from yarl import URL
 import browser_cookie3  # pyright: ignore[reportMissingTypeStubs]
 
-__version__ = "0.1.5"
+__version__ = "0.1.6"
 
 __all__ = ("__version__", "main", "Client", "Store", "Syncer")
 
