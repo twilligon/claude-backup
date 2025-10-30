@@ -1,6 +1,7 @@
-"""Backup Claude.ai chats"""
+"""Unofficial, unsanctioned tool to backup Claude.ai chats to local files."""
 
-# pyright: reportAny=false, reportExplicitAny=false, reportUnusedCallResult=false
+# pyright: reportAny=false, reportExplicitAny=false
+# pyright: reportImplicitOverride=false, reportUnusedCallResult=false
 
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
 from collections import defaultdict
@@ -13,7 +14,6 @@ from collections.abc import (
     Iterator,
 )
 from dataclasses import dataclass, field
-from itertools import chain, islice, zip_longest
 from contextlib import aclosing, suppress
 from pathlib import Path
 from tempfile import NamedTemporaryFile, TemporaryDirectory
@@ -21,7 +21,6 @@ from types import TracebackType
 from typing import Any, ClassVar, TypeAlias, TypeVar, cast
 from uuid import UUID
 import asyncio
-import hashlib
 import json
 import os
 import shutil
@@ -88,7 +87,7 @@ class Client:
                 retry_delay = min(retry_delay * 2, self.max_retry_delay)
 
         assert r is not None  # never happens unless self.retries <= 0
-        r.raise_for_status()  # pyright: ignore[reportOptionalMemberAccess]
+        r.raise_for_status()
         raise ClientError  # pyright doesn't know above always throws. sad!
 
 
@@ -105,7 +104,7 @@ class Store:
     def __post_init__(self):
         if not self.store_dir.exists():
             self.store_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-            (self.store_dir / "version").write_text(__version__)
+            (self.store_dir / "version").write_text(f"{__version__}\n")
             return
 
         version = None
@@ -143,7 +142,7 @@ class Store:
                 shutil.rmtree(self.store_dir)
                 Path(adjacent_temp).rename(self.store_dir)
 
-        (self.store_dir / "version").write_text(__version__)
+        (self.store_dir / "version").write_text(f"{__version__}\n")
 
     def save(self, path: Path, data: Json) -> None:
         cache_file = self.store_dir / path.with_suffix(".json")
@@ -187,6 +186,10 @@ class Store:
 
 
 class APIObject:
+    _client: Client  # pyright: ignore[reportUninitializedInstanceVariable]
+    _store: Store    # pyright: ignore[reportUninitializedInstanceVariable]
+    _data: Json      # pyright: ignore[reportUninitializedInstanceVariable]
+
     @property
     def client(self) -> Client:
         return self._client
@@ -204,7 +207,7 @@ class APIObject:
 
     @classmethod
     async def load(
-        cls, *args, api_path: str | None = None, store_path: Path | None = None
+        cls, *args: Any, api_path: str | None = None, store_path: Path | None = None
     ):
         obj = cls(*args)
         api_path = api_path or obj.api_path()
@@ -229,13 +232,13 @@ class APIObject:
 
     def __eq__(self, other: object) -> bool:
         if type(self) is type(other):
-            return self._data == other._data
+            return self._data == cast("APIObject", other)._data
         else:
             return NotImplemented
 
 
 class Nameable(APIObject):
-    __slots__ = ()
+    __slots__: ClassVar[tuple[()]] = ()
 
     _data: JsonD  # pyright: ignore[reportIncompatibleVariableOverride]
 
@@ -264,7 +267,13 @@ class Nameable(APIObject):
 
 
 class Chat(Nameable):
-    __slots__ = ("chat_conversations", "_data")
+    __slots__: ClassVar[tuple[str, str]] = (  # pyright: ignore[reportIncompatibleVariableOverride]
+        "chat_conversations",
+        "_data",
+    )
+
+    chat_conversations: "ChatConversationsList"
+    _data: JsonD
 
     def __init__(
         self,
@@ -295,12 +304,18 @@ class Chat(Nameable):
     def __eq__(self, other: object) -> bool:
         return (
             super().__eq__(other)
-            and self.chat_conversations == other.chat_conversations
+            and self.chat_conversations == cast(Chat, other).chat_conversations
         )
 
 
 class ChatConversationsEntry(Nameable):
-    __slots__ = ("chat_conversations", "_data")
+    __slots__: ClassVar[tuple[str, str]] = (  # pyright: ignore[reportIncompatibleVariableOverride]
+        "chat_conversations",
+        "_data",
+    )
+
+    chat_conversations: "ChatConversationsList"
+    _data: JsonD
 
     def __init__(
         self,
@@ -338,14 +353,16 @@ class ChatConversationsEntry(Nameable):
     def __eq__(self, other: object) -> bool:
         return (
             super().__eq__(other)
-            and self.chat_conversations == other.chat_conversations
+            and self.chat_conversations
+            == cast(ChatConversationsEntry, other).chat_conversations
         )
 
 
 class ChatConversationsList(APIObject):
-    __slots__ = ("organization", "unseen", "_data")
+    __slots__: ClassVar[tuple[str, str, str]] = ("organization", "unseen", "_data")
 
-    _data: dict[str, JsonD]  # pyright: ignore[reportIncompatibleVariableOverride]
+    organization: "Organization"
+    _data: dict[str, JsonD]
     unseen: int
 
     def __init__(self, organization: "Organization"):
@@ -370,7 +387,7 @@ class ChatConversationsList(APIObject):
     def set_data(self, data: Json) -> "ChatConversationsList":
         # convert list (reverse chronological from API) to dict (forward chronological)
         entries_list = cast(list[JsonD], data)
-        self._data = {
+        self._data = {  # pyright: ignore[reportIncompatibleVariableOverride]
             cast(str, entry["uuid"]): entry for entry in reversed(entries_list)
         }
         return self
@@ -390,7 +407,7 @@ class ChatConversationsList(APIObject):
             yield ChatConversationsEntry(self).set_data(chat_data)
 
     async def entries(self) -> AsyncGenerator[ChatConversationsEntry, None]:
-        seen = set()
+        seen: set[ChatConversationsEntry] = set()
 
         async for entry in self.new_entries():
             seen.add(entry)
@@ -492,11 +509,22 @@ class ChatConversationsList(APIObject):
         return hash((super().__hash__(), self.organization))
 
     def __eq__(self, other: object) -> bool:
-        return super().__eq__(other) and self.organization == other.organization
+        return (
+            super().__eq__(other)
+            and self.organization == cast(ChatConversationsList, other).organization
+        )
 
 
 class Organization(Nameable):
-    __slots__ = ("_client", "_store", "_data")
+    __slots__: ClassVar[tuple[str, str, str]] = (  # pyright: ignore[reportIncompatibleVariableOverride]
+        "_client",
+        "_store",
+        "_data",
+    )
+
+    _client: Client
+    _store: Store
+    _data: JsonD
 
     def __init__(self, client: Client, store: Store):
         self._client = client
@@ -517,7 +545,13 @@ class Organization(Nameable):
 
 
 class Membership(APIObject):
-    __slots__ = ("account", "_data")
+    __slots__: ClassVar[tuple[str, str]] = (
+        "account",
+        "_data",  # pyright: ignore[reportIncompatibleVariableOverride]
+    )
+
+    account: "Account"
+    _data: JsonD
 
     def __init__(self, account: "Account"):
         self.account = account
@@ -533,18 +567,26 @@ class Membership(APIObject):
     @property
     def organization(self) -> Organization:
         return Organization(self.client, self.store).set_data(
-            cast(JsonD, cast(JsonD, self._data)["organization"])
+            cast(JsonD, self._data["organization"])
         )
 
     def __hash__(self) -> int:
         return hash((super().__hash__(), self.account))
 
     def __eq__(self, other: object) -> bool:
-        return super().__eq__(other) and self.account == other.account
+        return super().__eq__(other) and self.account == cast(Membership, other).account
 
 
 class Account(Nameable):
-    __slots__ = ("_client", "_store", "_data")
+    __slots__: ClassVar[tuple[str, str, str]] = (  # pyright: ignore[reportIncompatibleVariableOverride]
+        "_client",
+        "_store",
+        "_data",
+    )
+
+    _client: Client
+    _store: Store
+    _data: JsonD
 
     def __init__(self, client: Client, store: Store):
         self._client = client
@@ -567,7 +609,7 @@ def truncate(s: str, max_len: int) -> str:
     return s
 
 
-async def aroundrobin(*iterators: AsyncIterator[T]) -> AsyncIterator[T]:
+async def aroundrobin(*iterators: AsyncGenerator[T, None]) -> AsyncGenerator[T, None]:
     """Async round-robin across multiple async iterators."""
     try:
         done = False
@@ -628,14 +670,18 @@ class Syncer:
     def as_completed(
         self, awaitables: Iterable[Awaitable[T]] | AsyncIterator[Awaitable[T]]
     ) -> AsyncGenerator[asyncio.Task[T], None]:
-        async def asyncify(iterable):
+        async def asyncify(
+            iterable: Iterable[Awaitable[T]],
+        ) -> AsyncGenerator[Awaitable[T], None]:
             for item in iterable:
                 yield item
 
         if hasattr(awaitables, "__anext__"):
-            return self._as_completed(awaitables)
+            return self._as_completed(cast(AsyncIterator[Awaitable[T]], awaitables))
         else:
-            return self._as_completed(asyncify(awaitables))
+            return self._as_completed(
+                asyncify(cast(Iterable[Awaitable[T]], awaitables))
+            )
 
     async def gather(self, *awaitables: Awaitable[T]) -> list[T]:
         tasks_list = [asyncio.ensure_future(a) for a in awaitables]
@@ -650,10 +696,12 @@ class Syncer:
         account = await Account.load(self.client, self.store)
         account.save()
 
-        async def get_chat_conversations_list(organization):
+        async def get_chat_conversations_list(
+            organization: Organization,
+        ) -> ChatConversationsList:
             return await organization.chat_conversations()
 
-        chat_conversations_list_fetches = []
+        chat_conversations_list_fetches: list[Awaitable[ChatConversationsList]] = []
         for membership in account.memberships():
             organization = membership.organization
             if "chat" not in organization.capabilities:
@@ -667,7 +715,7 @@ class Syncer:
 
         return await self.gather(*chat_conversations_list_fetches)
 
-    def print_chat_entry(self, entry):
+    def print_chat_entry(self, entry: ChatConversationsEntry) -> None:
         name = entry.name or ""
         if self.tty:
             try:
@@ -709,7 +757,7 @@ class Syncer:
 class DefaultPath:
     path: str
 
-    def __str__(self):  # pyright: ignore[reportImplicitOverride]
+    def __str__(self):
         try:
             return f"~/{Path(self.path).relative_to(Path.home())}"
         except ValueError:
@@ -730,7 +778,7 @@ def get_session_key() -> str:
 
 
 async def _main() -> None:
-    def default(cls: type, key: str) -> Any:
+    def default(cls: type[Any], key: str) -> Any:
         return cls.__dataclass_fields__[key].default
 
     parser = ArgumentParser(

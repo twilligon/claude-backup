@@ -1,5 +1,8 @@
 # `claude-backup`
-`claude-backup` is an unofficial, unsanctioned tool to backup Claude.ai chats to local JSON files. It uses an incremental sync algorithm to efficiently update only changed or new conversations. The tool handles authentication via browser cookies or a session key, supports multiple organizations, and preserves chat metadata including renames.
+
+Unofficial, unsanctioned tool to backup Claude.ai chats to local files.
+
+`claude-backup` uses an incremental sync algorithm to efficiently update only changed or new conversations. It handles authentication via browser cookies or a session key, supports multiple organizations, and preserves chat metadata including renames.
 
 ## Features
 
@@ -29,9 +32,9 @@ The bleeding-edge way:
 ## Usage
 
     $ claude-backup --help
-    usage: claude-backup [-h] [-r RETRIES] [-s SUCCESS_DELAY]
-                         [--min-retry-delay MIN_RETRY_DELAY]
-                         [--max-retry-delay MAX_RETRY_DELAY] [--force-refresh]
+    usage: claude-backup [-h] [-v] [-c CONNECTIONS] [-s DELAY] [-r RETRIES]
+                         [--min-retry-delay DELAY] [--max-retry-delay DELAY]
+                         [--force-refresh]
                          [backup_dir]
 
     Backup Claude.ai chats
@@ -42,21 +45,24 @@ The bleeding-edge way:
 
     options:
       -h, --help            show this help message and exit
+      -v, --version         show program's version number and exit
+      -c, --connections CONNECTIONS
+                            Maximum concurrent connections (default: 6)
+      -s, --success-delay DELAY
+                            Delay after successful request in seconds (default:
+                            0.1)
       -r, --retries RETRIES
                             Number of retries for API requests (default: 10)
-      -s, --success-delay SUCCESS_DELAY
-                            Delay after successful request in seconds (default:
-                            0.25)
-      --min-retry-delay MIN_RETRY_DELAY
+      --min-retry-delay DELAY
                             Minimum retry delay in seconds (default: 1)
-      --max-retry-delay MAX_RETRY_DELAY
+      --max-retry-delay DELAY
                             Maximum retry delay in seconds (default: 60)
       --force-refresh       Re-fetch all accounts and chats, ignoring cache
                             (default: False)
 
 ## Authentication
 
-Set the `CLAUDE_SESSION_KEY` environment variable to your claude.ai sessionKey cookie. If not set, the tool will attempt to load cookies from your browser automatically.
+Set the `CLAUDE_SESSION_KEY` environment variable to your claude.ai sessionKey cookie. If not set, `claude-backup` will attempt to load cookies from your browser automatically.
 
 ## License
 
