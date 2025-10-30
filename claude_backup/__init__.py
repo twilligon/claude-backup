@@ -83,6 +83,7 @@ class Client:
                 await asyncio.sleep(retry_delay)
                 retry_delay = min(retry_delay * 2, self.max_retry_delay)
 
+        assert r is not None  # never happens unless self.retries <= 0
         r.raise_for_status()  # pyright: ignore[reportOptionalMemberAccess]
         raise ClientError  # pyright doesn't know above always throws. sad!
 
@@ -164,6 +165,7 @@ class Store:
     def rename(self, old_path: Path, new_path: Path) -> None:
         old_file = self.store_dir / old_path.with_suffix(".json")
         new_file = self.store_dir / new_path.with_suffix(".json")
+        new_file.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         old_file.rename(new_file)
 
 
@@ -212,6 +214,8 @@ class APIObject:
 
 
 class Nameable(APIObject):
+    __slots__ = ()
+
     _data: JsonD  # pyright: ignore[reportIncompatibleVariableOverride]
 
     FILENAME_XLAT: ClassVar[dict[int, int]] = {
@@ -343,12 +347,14 @@ class ChatConversations(APIObject):
             yield ChatConversationsEntry(self.client, self.store, self, chat)
 
     async def entries(self) -> AsyncGenerator[ChatConversationsEntry, None]:
-        seen_uuids = set()
+        seen = set()
+
         async for entry in self.new_entries():
-            seen_uuids.add(entry.uuid)
+            seen.add(entry)
             yield entry
+
         for entry in self.cached_entries():
-            if entry.uuid not in seen_uuids:
+            if entry not in seen:
                 yield entry
 
     async def new_entries(
@@ -376,7 +382,7 @@ class ChatConversations(APIObject):
                     # this api doesn't have cursors or snapshots or anything :(
                     # so if a chat is created or updated *between our fetching
                     # one page and the next*, there is a *new* most recent chat
-                    # which bumps all the others down and cause the last chat
+                    # which bumps all the others down and causes the last chat
                     # of the prior page also to be the first chat of the next:
                     #
                     # page 1 sees [A B]: [A B] C D E
@@ -392,7 +398,7 @@ class ChatConversations(APIObject):
 
                     # ...but if the above hypothesis is wrong for some perverse
                     # reason like all the chats up until now being rewritten in
-                    # order when we weren't looking, still yield changed chat:
+                    # a specific order behind our backs, still yield the chat:
                     #
                     # page 1 sees [A B]:  [A B] C D E
                     # B, D, & A updated:  A' D' B' C E
@@ -424,7 +430,7 @@ class ChatConversations(APIObject):
 
         # for efficient inserts, self._data is in "forward-chronological" order
         # which means we need to merge reverse-chronological new in reverse. ez
-        self._data.update(reversed(new.keys()))
+        self._data.update(reversed(new.items()))
         self.save()
 
     async def refresh(self) -> None:
@@ -510,20 +516,24 @@ class Account(Nameable):
             yield Membership(self.client, self.store, self, m)
 
 
-TTY = sys.stdout.isatty()
-
-
 def truncate(s: str, max_len: int) -> str:
     if len(s) > max_len:
         return s[: max_len - 1] + "…"
     return s
 
 
-def get_terminal_width() -> int:
-    if TTY:
-        with suppress(AttributeError, OSError):
-            return os.get_terminal_size().columns
-    return 80
+async def aroundrobin(*iterators: AsyncIterator[T]) -> AsyncIterator[T]:
+    """Async round-robin across multiple async iterators."""
+    try:
+        done = False
+        while not done:
+            done = True
+            for it in iterators:
+                with suppress(StopAsyncIteration):
+                    yield await anext(it)
+                    done = False
+    finally:
+        await asyncio.gather(*(it.aclose() for it in iterators), return_exceptions=True)
 
 
 @dataclass(slots=True)
@@ -532,8 +542,6 @@ class Syncer:
     store: Store
     connections: int = 6
     success_delay: float = 0.1
-    total: int = field(init=False, default=0)
-    seen: int = field(init=False, default=0)
 
     async def as_completed(
         self, awaitables: Iterable[Awaitable[T]]
@@ -556,7 +564,7 @@ class Syncer:
 
                     if next_task := next(awaitables_iter, None):
                         pending.add(asyncio.ensure_future(next_task))
-        except:
+        except BaseException:  # catch *everything* so we can cancel tasks
             for task in pending:
                 task.cancel()
 
@@ -574,139 +582,47 @@ class Syncer:
         # gather all, in original order; we awaited above so this is instant
         return await asyncio.gather(*awaitables_list)
 
-    def get_batch(
-        self,
-        batch: Iterable[ChatConversationsEntry],
-        organization: Organization,
-        cached_chats: dict[str, ChatConversationsEntry],
-    ) -> Iterator[Awaitable[ChatConversationsEntry]]:
-        for entry in batch:
-            self.seen += 1
-
-            progress = f"{self.seen:>{len(str(self.total))}}/{self.total} {entry.uuid}"
-
-            if entry.name:
-                max_name_len = max(10, get_terminal_width() - (len(progress) + 1))
-                print(f"{progress} {truncate(entry.name, max_name_len)}")
-            else:
-                print(progress)
-
-            if old_entry := cached_chats.get(entry.uuid):
-                if old_entry.name != entry.name:
-                    with suppress(FileNotFoundError):
-                        self.store.rename(old_entry.store_path(), entry.store_path())
-
-            async def _fetch_and_save() -> ChatConversationsEntry:
-                await entry.chat()  # Loads from disk or fetches from API, auto-saves
-                return entry
-
-            yield _fetch_and_save()
-
-    async def get_organization_batches(
-        self, organization: Organization
-    ) -> AsyncGenerator[Iterator[Awaitable[ChatConversationsEntry]], None]:
-        chat_conversations = await organization.chat_conversations()
-        cached_chats: dict[str, ChatConversationsEntry] = {}
-        for entry in chat_conversations:
-            cached_chats[entry.uuid] = entry
-        self.total += len(cached_chats)
-        self.seen += len(cached_chats)
-
-        batch = await chat_conversations.new_entries()
-        while len(chat_conversations):
-            self.total += len(chat_conversations)
-            yield self.get_batch(batch, organization, cached_chats)
-            batch = await chat_conversations.new_entries()
-
-        # Only save after all chats have been fetched
-        chat_conversations.save()
-
-    async def get_all_nth_batches(self) -> list[ChatConversations]:
+    async def get_chat_lists(self) -> list[AsyncIterator[ChatConversationsEntry]]:
         account = Account(self.client, self.store, await self.client.refresh("account"))
         account.save()
 
-        def chat_conversations_fetches():
-            for membership in account.memberships():
-                organization = membership.organization
-                if "chat" not in organization.capabilities:
-                    print(
-                        f'Skipping organization {organization} without "chat" capability'
-                    )
-                    continue
+        async def get_entries(organization):
+            return (await organization.chat_conversations()).entries()
 
-                print(f"Fetching chats for organization {organization}")
-                yield organization.chat_conversations()
+        entry_iterator_fetches = []
+        for membership in account.memberships():
+            organization = membership.organization
+            if "chat" not in organization.capabilities:
+                print(f'Skipping organization {organization} without "chat" capability')
+                continue
 
-        return await self.gather(*chat_conversations_fetches())
+            print(f"Fetching chats for organization {organization}")
+            entry_iterator_fetches.append(get_entries(organization))
 
-    async def get_batches(
-        self,
-    ) -> AsyncGenerator[Iterator[Awaitable[ChatConversationsEntry]], None]:
-        async with aclosing(self.get_all_nth_batches()) as nth_batches_gen:
-            async for nth_batches in nth_batches_gen:
-                # round robin across batches when yielded object is iterated over
-                yield filter(None, chain.from_iterable(zip_longest(*nth_batches)))
+        return await self.gather(*entry_iterator_fetches)
+
+    async def get_chats(self) -> AsyncIterator[Awaitable[Chat]]:
+        chat_lists = await self.get_chat_lists()
+
+        tty = sys.stdout.isatty()
+        async with aclosing(aroundrobin(*chat_lists)) as entries:
+            async for entry in entries:
+                name = entry.name or ""
+
+                if tty:
+                    try:
+                        width = os.get_terminal_size().columns
+                    except OSError:
+                        width = 80
+                    name = truncate(name, width - 36 - 4)  # width - uuid - tab
+                print(f"{entry.uuid}\t{name}")
+                yield entry.chat()
 
     async def sync_all(self) -> None:
-        async with aclosing(self.get_batches()) as batches_gen:
-            async for batch in batches_gen:
-                await self.gather(*batch)
-
-    async def sync_all_2(self) -> None:
-        account = Account(self.client, self.store, await self.client.refresh("account"))
-        account.save()
-
-        def chat_conversations_fetches():
-            for membership in account.memberships():
-                organization = membership.organization
-                if "chat" not in organization.capabilities:
-                    print(
-                        f'Skipping organization {organization} without "chat" capability'
-                    )
-                    continue
-
-                print(f"Fetching chats for organization {organization}")
-                yield organization.chat_conversations()
-
-        chat_lists = await self.gather(*chat_conversations_fetches())
-
-        # Initialize tracking with cached entries
-        self.total = sum(len(chat_list) for chat_list in chat_lists)
-        self.seen = 0
-
-        # Get entry generators for each chat list
-        entry_generators = [chat_list.entries() for chat_list in chat_lists]
-
-        # Round-robin across generators
-        while entry_generators:
-            batch = []
-            remaining_generators = []
-
-            for gen in entry_generators:
-                try:
-                    entry = await anext(gen)
-                    self.seen += 1
-
-                    progress = (
-                        f"{self.seen:>{len(str(self.total))}}/{self.total} {entry.uuid}"
-                    )
-                    if entry.name:
-                        max_name_len = max(
-                            10, get_terminal_width() - (len(progress) + 1)
-                        )
-                        print(f"{progress} {truncate(entry.name, max_name_len)}")
-                    else:
-                        print(progress)
-
-                    batch.append(entry.chat())
-                    remaining_generators.append(gen)
-                except StopAsyncIteration:
-                    pass
-
-            entry_generators = remaining_generators
-
-            if batch:
-                await self.gather(*batch)
+        async with aclosing(self.get_chats()) as chats:
+            async with aclosing(self.as_completed(chats)) as tasks:
+                async for task in tasks:
+                    await task
 
 
 @dataclass(slots=True)
