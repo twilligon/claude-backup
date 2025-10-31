@@ -5,14 +5,14 @@ Unofficial, unsanctioned tool to backup [Claude.ai](https://claude.ai) chats to 
 
 ## Features
 
-`claude-backup` creates a full copy of all (text) content of all chats accessible to your [Claude.ai](https://claude.ai) account. If you are a member of multiple "organizations", it fetches chats from all of them. We preserve all metadata on chats and their provenance, including that of their parent organization and user. We automatically rename our local copies of chats and organizations to match their current names on `claude.ai`.
+`claude-backup` creates a full local copy of all (text) content of all branches of all chats accessible to your [Claude.ai](https://claude.ai) account. If you are a member of multiple "organizations", it fetches chats from all of them. We preserve all metadata on chats and their provenance, including that of their parent organization and user. We automatically rename our local copies of chats and organizations to match their current names on `claude.ai`.
 
 Chats are stored as their original API JSON with nice `find`able names and `grep`able contents:
 
 ```
 $ CLAUDE_SESSION_KEY="$(wl-paste)" uvx claude-backup
 $ tree ~/.local/share/claude-backup | head -n15
-.local/share/claude-backup
+~/.local/share/claude-backup
 ├── account.json
 ├── organizations
 │   └── claude@twilligon.com's_Organization-9e9a56fc-6d1c-4d62-a96d-0cff3a473cf0
@@ -32,13 +32,18 @@ Fixing_dry_falafel_centers-08217feb-c912-40c2-9d14-f89784d61ab5.json
 Best_falafel_restaurants_in_San_Francisco-76aa159a-e41a-4935-a2e5-d53465041e13.json
 Rainy_day_food_delivery_dilemma-db4992e8-c69c-4085-a571-9a22dfff68da.json
 Pita_Chip_Conversation_Search-059dca9c-bac3-4cd5-b405-34ddbbdd5fa8.json
+$ rg -0l falafel ~/.local/share/claude-backup/organizations/*/chat_conversations | xargs -0 jq -r '"https://claude.ai/chat/\(.uuid)"'
+https://claude.ai/chat/08217feb-c912-40c2-9d14-f89784d61ab5
+https://claude.ai/chat/76aa159a-e41a-4935-a2e5-d53465041e13
+https://claude.ai/chat/db4992e8-c69c-4085-a571-9a22dfff68da
+https://claude.ai/chat/059dca9c-bac3-4cd5-b405-34ddbbdd5fa8
 ```
 
-We use an incremental sync algorithm to fetch only chats created or updated since the last backup. The fetch is done in parallel, with a typical user agent and polite rate and connection limits such that it's less traffic than scrolling through your chats and opening each in a new browser tab. I of course can't guarantee Big Claude won't be after you if you run this unofficial tool, but empirically they don't seem to mind.
+We use an incremental sync algorithm to fetch only chats created or updated since the last backup. The fetch is done in parallel, with a typical user agent and polite rate and connection limits such that it's less traffic than manually scrolling through your chats and opening each in a new browser tab. I of course can't guarantee Big Claude won't be after you if you run this unofficial tool, but empirically they don't seem to mind.
 
 ## Limitations
 
-This tool is the product of reverse-engineering Claude.ai's internal API (for Good, not Evil---please don't ban me Anthropic 🙏) so I can't make any guarantees `claude-backup` will continue to work. That said, we make very few assumptions about the API schema, and everything works as of 2025-10-31. I'll likely update this best-effort when things break. Barring that, PRs welcome ;)
+This read-only tool is the product of reverse-engineering Claude.ai's internal API (for Good, not Evil---please don't ban me Anthropic 🙏) so I can't make any guarantees `claude-backup` will continue to work. That said, we make very few assumptions about the API schema, and everything works as of 2025-10-31. I'll likely update this best-effort when things break. Barring that, PRs welcome ;)
 
 For reliable and comprehensive backups even through minor API changes, we save raw JSON responses from the API instead of normalizing them to some fixed schema. This should be a bit more resilient than forcing everything into some internal data model that could diverge from that of Claude.ai, but it means we don't download resources referenced by API objects other than what's necessary to list and fetch chat text. In practice, this preserves all textual message content and text/markdown attachments, but not images, PDFs, container uploads, "advanced research" reports, etc.
 
