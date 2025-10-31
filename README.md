@@ -7,10 +7,31 @@ Unofficial, unsanctioned tool to backup [Claude.ai](https://claude.ai) chats to 
 
 `claude-backup` creates a full local copy of all (text) content of all branches of all chats accessible to your [Claude.ai](https://claude.ai) account. If you are a member of multiple "organizations", it fetches chats from all of them. We preserve all metadata on chats and their provenance, including that of their parent organization and user. We automatically rename our local copies of chats and organizations to match their current names on `claude.ai`.
 
+We use an incremental sync algorithm to fetch only chats created or updated since the last backup. The fetch is done in parallel, with a typical user agent and polite rate and connection limits such that it's less traffic than manually scrolling through your chats and opening each in a new browser tab. I of course can't guarantee Big Claude won't be after you if you run this unofficial tool, but empirically they don't seem to mind.
+
 Chats are stored as their original API JSON with nice `find`able names and `grep`able contents:
 
 ```
 $ CLAUDE_SESSION_KEY="$(wl-paste)" uvx claude-backup
+Skipping organization twilligon (c8eaca6b-eddb-4bbc-9fe3-637a0574565f) without "chat" capability
+Fetching chats for organization claude@twilligon.com's Organization (9e9a56fc-6d1c-4d62-a96d-0cff3a473cf0)
+30ceebd6-afcc-4796-bb77-631069cd0696    Cadre versus posse comparison
+d15ac7d6-f167-43d3-afac-fcfaaafb64ec    GraphQL database backends and data sources
+3e553492-89a8-45e8-b51a-b2faf9dfde64    Japanese sword quality despite poor iron sources
+040343e8-db5a-4031-a21a-be237a6c661a    Balisong pin and screw maintenance
+08217feb-c912-40c2-9d14-f89784d61ab5    Fixing dry falafel centers
+d41bf95e-8da1-47b3-af89-aecacd7770a6    Sleep Token's artistic merits
+b10e02dd-479b-4714-9d99-264d6ef4ba75    Annual human steel consumption
+608f7e3d-fbcc-4891-bf67-ebc9f15c7a01    Calling payphones from mobile devices
+c56ad0c5-feae-4dae-bafc-784d1f46de29    Postfix security assessment
+4553fae5-61a6-40fc-b95c-36c53e706614    App store review power dynamics for major companies
+0b7f4ae8-ef57-4cac-8d47-7e4c5b0e5564    Exercise timing and sleep quality
+6e5385c4-6ad4-4d46-ac20-dda2105a3bea    Scented neural networks with odor emissions
+$ # ...and so on... time passes... then later:
+$ CLAUDE_SESSION_KEY="$(wl-paste)" uvx claude-backup
+Skipping organization twilligon (c8eaca6b-eddb-4bbc-9fe3-637a0574565f) without "chat" capability
+Fetching chats for organization claude@twilligon.com's Organization (9e9a56fc-6d1c-4d62-a96d-0cff3a473cf0)
+4ddbcc12-5cd8-4611-813a-befdedeb4b16    Smithsonian funding and government ownership
 $ tree ~/.local/share/claude-backup | head -n15
 ~/.local/share/claude-backup
 ├── account.json
@@ -39,8 +60,6 @@ https://claude.ai/chat/db4992e8-c69c-4085-a571-9a22dfff68da
 https://claude.ai/chat/059dca9c-bac3-4cd5-b405-34ddbbdd5fa8
 ```
 
-We use an incremental sync algorithm to fetch only chats created or updated since the last backup. The fetch is done in parallel, with a typical user agent and polite rate and connection limits such that it's less traffic than manually scrolling through your chats and opening each in a new browser tab. I of course can't guarantee Big Claude won't be after you if you run this unofficial tool, but empirically they don't seem to mind.
-
 ## Limitations
 
 This read-only tool is the product of reverse-engineering Claude.ai's internal API (for Good, not Evil---please don't ban me Anthropic 🙏) so I can't make any guarantees `claude-backup` will continue to work. That said, we make very few assumptions about the API schema, and everything works as of 2025-10-31. I'll likely update this best-effort when things break. Barring that, PRs welcome ;)
@@ -49,7 +68,7 @@ For reliable and comprehensive backups even through minor API changes, we save r
 
 Because of how our incremental sync works, if `claude-backup` is interrupted, the next sync must start from scratch. This is moderately easy to fix but I'm lazy :)
 
-As a backup tool, we *retain deleted chats* by default. To start from scratch and delete our local copies of deleted chats, manually delete the `backup_dir` or run `claude-backup --ignore-cache`.
+As a backup tool, we *retain deleted chats* (and old branches of extant chats) by default. To delete local copies, manually delete the corresponding `.json` from `backup_dir` or start from scratch by deleting `backup_dir` or running `claude-backup --ignore-cache`.
 
 By default, `claude-backup` attempts to authenticate to `claude.ai` by extracting a session cookie from your browser. If this doesn't work (and frankly if this does work you should be sandboxing things better!) you must manually do the same. For Chrome et al., to https://claude.ai in your browser, open *Developer tools* with F12 or Ctrl+Shift+I, navigate to the *Application* tab (it may be hidden under *⋮* > *More tools* > *Application*), and copy the value of the `sessionKey` cookie. (Firefox should be [similar](https://firefox-source-docs.mozilla.org/devtools-user/storage_inspector/index.html).) Then set the `CLAUDE_SESSION_KEY` environment variable to this cookie when running `claude-backup`:
 
