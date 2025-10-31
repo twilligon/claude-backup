@@ -28,7 +28,7 @@ import sys
 
 from fake_useragent import UserAgent
 from platformdirs import user_data_dir
-from aiohttp import ClientError, ClientSession, CookieJar
+from aiohttp import ClientError, ClientSession, CookieJar, TCPConnector
 from yarl import URL
 import browser_cookie3  # pyright: ignore[reportMissingTypeStubs]
 
@@ -57,7 +57,9 @@ class Client:
         jar = CookieJar()
         jar.update_cookies({"sessionKey": self.session_key}, URL("https://claude.ai/"))
 
-        self.session = ClientSession(headers=headers, cookie_jar=jar)
+        self.session = ClientSession(
+            headers=headers, cookie_jar=jar, connector=TCPConnector(limit=0)
+        )
 
     async def __aenter__(self):
         await self.session.__aenter__()
@@ -76,15 +78,15 @@ class Client:
         retry_delay = self.min_retry_delay
         r = None
         for _ in range(self.retries):
-            r = await self.session.get(
+            async with self.session.get(
                 f"https://claude.ai/api/{path}", allow_redirects=False
-            )
-            if r.ok:
-                data = cast(Json, await r.json())
-                return data
-            else:
-                await asyncio.sleep(retry_delay)
-                retry_delay = min(retry_delay * 2, self.max_retry_delay)
+            ) as r:
+                if r.ok:
+                    data = cast(Json, await r.json())
+                    return data
+                else:
+                    await asyncio.sleep(retry_delay)
+                    retry_delay = min(retry_delay * 2, self.max_retry_delay)
 
         assert r is not None  # never happens unless self.retries <= 0
         r.raise_for_status()
@@ -310,16 +312,6 @@ class Chat(Nameable):
     def store_path(self) -> Path:
         return self.chat_list.store_path() / self.slug()
 
-    def __hash__(self) -> int:
-        return hash((super().__hash__(), self.chat_list))
-
-    def __eq__(self, other: object) -> bool:
-        if type(self) is type(other):
-            assert isinstance(other, Chat)  # appease pyright
-            return super().__eq__(other) and self.chat_list == other.chat_list
-        else:
-            return NotImplemented
-
 
 @final
 class ChatsEntry(Nameable):
@@ -361,16 +353,6 @@ class ChatsEntry(Nameable):
             api_path=self.chat_api_path(),
             store_path=self.chat_store_path(),
         )
-
-    def __hash__(self) -> int:
-        return hash((super().__hash__(), self.chat_list))
-
-    def __eq__(self, other: object) -> bool:
-        if type(self) is type(other):
-            assert isinstance(other, ChatsEntry)  # appease pyright
-            return super().__eq__(other) and self.chat_list == other.chat_list
-        else:
-            return NotImplemented
 
 
 @final
@@ -436,17 +418,6 @@ class Chats(APIObject):
         # yield in reverse chronological order (newest first)
         for entry in reversed(self._data.values()):
             yield ChatsEntry(self).set_data(entry)
-
-    async def entries(self) -> AsyncGenerator[ChatsEntry, None]:
-        seen: set[ChatsEntry] = set()
-
-        async for entry in self.new_entries():
-            seen.add(entry)
-            yield entry
-
-        for entry in self.cached_entries():
-            if entry not in seen:
-                yield entry
 
     async def new_entries(
         self, page_size: int = 20
@@ -549,16 +520,6 @@ class Chats(APIObject):
     def __len__(self) -> int:
         return len(self._data)
 
-    def __hash__(self) -> int:
-        return hash((super().__hash__(), self.organization))
-
-    def __eq__(self, other: object) -> bool:
-        if type(self) is type(other):
-            assert isinstance(other, Chats)  # appease pyright
-            return super().__eq__(other) and self.organization == other.organization
-        else:
-            return NotImplemented
-
 
 @final
 class Organization(Nameable):
@@ -616,16 +577,6 @@ class Membership(APIObject):
         return Organization(self.client, self.store).set_data(
             cast(JsonD, self._data["organization"])
         )
-
-    def __hash__(self) -> int:
-        return hash((super().__hash__(), self.account))
-
-    def __eq__(self, other: object) -> bool:
-        if type(self) is type(other):
-            assert isinstance(other, Membership)  # appease pyright
-            return super().__eq__(other) and self.account == other.account
-        else:
-            return NotImplemented
 
 
 @final
@@ -756,10 +707,13 @@ class Syncer:
         for membership in account.memberships():
             organization = membership.organization
             if "chat" not in organization.capabilities:
-                print(f'Skipping organization {organization} without "chat" capability')
+                print(
+                    f'Skipping organization {organization} without "chat" capability',
+                    file=sys.stderr,
+                )
                 continue
 
-            print(f"Fetching chats for organization {organization}")
+            print(f"Fetching chats for organization {organization}", file=sys.stderr)
             chat_list_fetches.append(get_chat_list(organization))
 
         return await self.gather(*chat_list_fetches)
