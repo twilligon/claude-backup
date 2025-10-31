@@ -34,7 +34,7 @@ The bleeding-edge way:
     $ claude-backup --help
     usage: claude-backup [-h] [-v] [-c CONNECTIONS] [-s DELAY] [-r RETRIES]
                          [--min-retry-delay DELAY] [--max-retry-delay DELAY]
-                         [--force-refresh]
+                         [--ignore-cache]
                          [backup_dir]
 
     Backup Claude.ai chats
@@ -54,10 +54,10 @@ The bleeding-edge way:
       -r, --retries RETRIES
                             Number of retries for API requests (default: 10)
       --min-retry-delay DELAY
-                            Minimum retry delay in seconds (default: 1)
+                            Minimum retry delay in seconds (default: 1.0)
       --max-retry-delay DELAY
-                            Maximum retry delay in seconds (default: 60)
-      --force-refresh       Re-fetch all accounts and chats, ignoring cache
+                            Maximum retry delay in seconds (default: 60.0)
+      --ignore-cache        Ignore local cache and re-fetch everything from API
                             (default: False)
 
 ## Authentication
