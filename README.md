@@ -68,13 +68,13 @@ For reliable and comprehensive backups even through minor API changes, we save r
 
 Because of how our incremental sync works, if `claude-backup` is interrupted, the next sync must start from scratch. This is moderately easy to fix but I'm lazy :)
 
-As a backup tool, we *retain deleted chats* (and old branches of extant chats) by default. To delete local copies, manually delete the corresponding `.json` from `backup_dir` or start from scratch by deleting `backup_dir` or running `claude-backup --ignore-cache`.
+As a backup tool, we **retain deleted chats** (and old branches of extant chats) by default. To delete local copies, manually delete the corresponding `.json` from `backup_dir` or start from scratch by deleting `backup_dir` or running `claude-backup --ignore-cache`.
 
-By default, `claude-backup` attempts to authenticate to `claude.ai` by extracting a session cookie from your browser. If this doesn't work (and frankly if this does work you should be sandboxing things better!) you must manually do the same. For Chrome et al., to https://claude.ai in your browser, open *Developer tools* with F12 or Ctrl+Shift+I, navigate to the *Application* tab (it may be hidden under *⋮* > *More tools* > *Application*), and copy the value of the `sessionKey` cookie. (Firefox should be [similar](https://firefox-source-docs.mozilla.org/devtools-user/storage_inspector/index.html).) Then set the `CLAUDE_SESSION_KEY` environment variable to this cookie when running `claude-backup`:
+By default, `claude-backup` attempts to authenticate to `claude.ai` by extracting a session cookie from your browser. If this doesn't work (and frankly if this does work you should be sandboxing things better!) you must manually do the same. For Chrome et al., to https://claude.ai in your browser, open **Developer tools** with F12 or Ctrl+Shift+I, navigate to the **Application** tab (it may be hidden under **⋮** > **More tools** > **Application**), and copy the value of the `sessionKey` cookie. (Firefox should be [similar](https://firefox-source-docs.mozilla.org/devtools-user/storage_inspector/index.html).) Then set the `CLAUDE_SESSION_KEY` environment variable to this cookie when running `claude-backup`:
 
     $ CLAUDE_SESSION_KEY="sk-ant-sid01-..." claude-backup
 
-As this tool demonstrates *anyone with this cookie is authenticated as you on `claude.ai`* so be careful and never give this to anyone or anything you do not trust! It might even be worth keeping out of `history` by loading it straight from your clipboard with e.g. `CLAUDE_SESSION_KEY="$(wl-paste)"`, though the exact command varies by platform. I'm sure Claude knows which you should use ;)
+As this tool demonstrates **anyone with this cookie is authenticated as you on `claude.ai`** so be careful and never give this to anyone or anything you do not trust! It might even be worth keeping out of `history` by loading it straight from your clipboard with e.g. `CLAUDE_SESSION_KEY="$(wl-paste)"`, though the exact command varies by platform. I'm sure Claude knows which you should use ;)
 
 ## Install
 
@@ -95,10 +95,10 @@ The bleeding-edge way:
     $ pip install -e .
     $ claude-backup
 
-## Usage_
+## Usage
 
     $ claude-backup --help
-    usage: claude-backup [-h] [-v] [-c CONNECTIONS] [-s DELAY] [-r RETRIES]
+    usage: claude-backup [-h] [-v] [-c CONNECTIONS] [-d DELAY] [-r RETRIES]
                          [--min-retry-delay DELAY] [--max-retry-delay DELAY]
                          [--ignore-cache]
                          [backup_dir]
@@ -114,7 +114,7 @@ The bleeding-edge way:
       -v, --version         show program's version number and exit
       -c, --connections CONNECTIONS
                             Maximum concurrent connections (default: 6)
-      -s, --success-delay DELAY
+      -d, --success-delay DELAY
                             Delay after successful request in seconds (default:
                             0.1)
       -r, --retries RETRIES
