@@ -109,8 +109,8 @@ class Client:
                     return data
                 elif r.status in range(300, 400):
                     raise ClientError(
-                        f"Unexpected redirect (HTTP {r.status}) - " +
-                        "session key may be invalid or API endpoint changed"
+                        f"Unexpected redirect (HTTP {r.status}) - "
+                        + "session key may be invalid or API endpoint changed"
                     )
                 else:
                     await asyncio.sleep(retry_delay)
@@ -420,6 +420,7 @@ class Chats(APIObject):
     def __init__(self, organization: "Organization"):
         self.organization = organization
         self.unseen = 0
+        self._data = {}
 
     @property
     def client(self) -> Client:
@@ -454,15 +455,6 @@ class Chats(APIObject):
             return obj.set_data(data)
         else:
             return None
-
-    @classmethod
-    async def _fetch(
-        cls,
-        *args: Any,
-        api_path: str | None = None,
-    ) -> "Chats":
-        obj = cls(*args)
-        return obj.set_data([])
 
     def get_data(self) -> Json:
         # convert dict (forward chronological) back to list (reverse chronological)
@@ -607,11 +599,8 @@ class Organization(Nameable, Loadable):
     def capabilities(self) -> list[str]:
         return cast(list[str], self._data["capabilities"])
 
-    def load_chat_list(self) -> Chats | None:
-        return Chats._load(self)
-
-    async def fetch_chat_list(self) -> Chats:
-        return await Chats._fetch(self)
+    def chat_list(self) -> Chats:
+        return Chats._load(self) or Chats(self)
 
 
 @final
@@ -765,16 +754,10 @@ class Syncer:
 
         return [task.result() for task in tasks_list]
 
-    async def get_chat_lists(self) -> list[Chats]:
+    async def get_organizations(self) -> AsyncGenerator[Organization]:
         old_account = Account.load(self.client, self.store)
         account = await Account.fetch(self.client, self.store)
 
-        async def get_chat_list(
-            organization: Organization,
-        ) -> Chats:
-            return organization.load_chat_list() or await organization.fetch_chat_list()
-
-        chat_list_fetches: list[Awaitable[Chats]] = []
         for membership in account.memberships():
             organization = membership.organization()
 
@@ -800,9 +783,7 @@ class Syncer:
                 continue
 
             print(f"Fetching chats for organization {organization}", file=sys.stderr)
-            chat_list_fetches.append(get_chat_list(organization))
-
-        return await self.gather(*chat_list_fetches)
+            yield organization
 
     def print_entry(self, entry: ChatsEntry) -> None:
         name = entry.name or ""
@@ -832,7 +813,9 @@ class Syncer:
         return _fetch_new_chat()
 
     async def new_chat_fetches(self) -> AsyncGenerator[Awaitable[Chat], None]:
-        needs_refresh: list[Chats] = await self.get_chat_lists()
+        needs_refresh: list[Chats] = [
+            organization.chat_list() async for organization in self.get_organizations()
+        ]
 
         while needs_refresh:
             async with aclosing(
