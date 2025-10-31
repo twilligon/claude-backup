@@ -2,6 +2,7 @@
 
 # pyright: reportAny=false, reportExplicitAny=false
 # pyright: reportImplicitOverride=false, reportUnusedCallResult=false
+# pyright: reportPrivateUsage=false, reportIncompatibleVariableOverride=false
 
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
 from collections import defaultdict
@@ -32,9 +33,27 @@ from aiohttp import ClientError, ClientSession, CookieJar, TCPConnector
 from yarl import URL
 import browser_cookie3  # pyright: ignore[reportMissingTypeStubs]
 
-__version__ = "0.1.7"
+__version__ = "0.1.8"
 
-__all__ = ("__version__", "main", "Client", "Store", "Syncer")
+__all__ = (
+    "__version__",
+    "main",
+    "get_session_key",
+    "Client",
+    "Store",
+    "Syncer",
+    "APIObject",
+    "Nameable",
+    "Loadable",
+    "Account",
+    "Membership",
+    "Organization",
+    "Chats",
+    "ChatsEntry",
+    "Chat",
+    "Json",
+    "JsonD",
+)
 
 Json: TypeAlias = dict[str, "Json"] | list["Json"] | str | int | float | bool | None
 JsonD: TypeAlias = dict[str, Json]
@@ -95,10 +114,17 @@ class Client:
 
 @dataclass(slots=True)
 class Store:
-    # migrate from unknown versions by not migrating anything, i.e. starting over
+    @staticmethod
+    def _cp(old: str | Path, new: str | Path) -> None:
+        shutil.copytree(old, new, dirs_exist_ok=True)
+
     MIGRATIONS: ClassVar[
         defaultdict[str | None, tuple[str, Callable[[str, str], None]]]
-    ] = defaultdict(lambda: (__version__, lambda old, new: None))
+    ] = defaultdict(
+        # migrate from unknown versions by not migrating anything/starting over
+        lambda: (__version__, lambda old, new: None),
+        {"0.1.7": ("0.1.8", _cp)},  # if format unchanged, migrate whole store
+    )
 
     store_dir: Path
     ignore_cache: bool = False
@@ -127,7 +153,7 @@ class Store:
                 dir=self.store_dir.parent,
             ) as new_store_dir,
         ):
-            shutil.copytree(self.store_dir, old_store_dir, dirs_exist_ok=True)
+            self._cp(self.store_dir, old_store_dir)
 
             while version != __version__:
                 version, migrate_step = self.MIGRATIONS[version]
@@ -140,7 +166,7 @@ class Store:
                 prefix=f"{self.store_dir.name}-",
                 dir=self.store_dir.parent,
             ) as adjacent_temp:
-                shutil.copytree(old_store_dir, adjacent_temp, dirs_exist_ok=True)
+                self._cp(old_store_dir, adjacent_temp)
                 shutil.rmtree(self.store_dir)
                 Path(adjacent_temp).rename(self.store_dir)
 
@@ -210,19 +236,24 @@ class APIObject:
         raise NotImplementedError
 
     @classmethod
-    async def load(
+    def _load(
         cls: type[T_APIObject],
         *args: Any,
-        ignore_cache: bool = False,
-        api_path: str | None = None,
         store_path: Path | None = None,
+    ) -> T_APIObject | None:
+        obj = cls(*args)
+        if data := obj.store.load(store_path or obj.store_path()):
+            return obj.set_data(data)
+        else:
+            return None
+
+    @classmethod
+    async def _fetch(
+        cls: type[T_APIObject],
+        *args: Any,
+        api_path: str | None = None,
     ) -> T_APIObject:
         obj = cls(*args)
-
-        if not ignore_cache:
-            if data := obj.store.load(store_path or obj.store_path()):
-                return obj.set_data(data)
-
         data = await obj.client.refresh(api_path or obj.api_path())
         return obj.set_data(data).save()
 
@@ -232,6 +263,9 @@ class APIObject:
     def save(self: T_APIObject) -> T_APIObject:
         self.store.save(self.store_path(), self.get_data())
         return self
+
+    def delete_cached(self) -> None:
+        self.store.delete(self.store_path())
 
     def __hash__(self) -> int:
         return hash(
@@ -253,7 +287,7 @@ class APIObject:
 
 
 class Nameable(APIObject):
-    _data: JsonD  # pyright: ignore[reportIncompatibleVariableOverride]
+    _data: JsonD
 
     FILENAME_XLAT: ClassVar[dict[int, int]] = {
         ord(c): ord("_") for c in '<>:"|?*/\\ \t\n\r'
@@ -277,6 +311,19 @@ class Nameable(APIObject):
         if self.name:
             return f"{self.name} ({self.uuid})"
         return self.uuid
+
+
+T_Loadable = TypeVar("T_Loadable", bound="Loadable")
+
+
+class Loadable(APIObject):
+    @classmethod
+    def load(cls: type[T_Loadable], client: Client, store: Store) -> T_Loadable | None:
+        return cls._load(client, store)
+
+    @classmethod
+    async def fetch(cls: type[T_Loadable], client: Client, store: Store) -> T_Loadable:
+        return await cls._fetch(client, store)
 
 
 @final
@@ -346,13 +393,11 @@ class ChatsEntry(Nameable):
     def chat_store_path(self) -> Path:
         return self.chat_list.store_path() / self.slug()
 
-    async def chat(self, ignore_cache: bool = False) -> Chat:
-        return await Chat.load(
-            self.chat_list,
-            ignore_cache=ignore_cache,
-            api_path=self.chat_api_path(),
-            store_path=self.chat_store_path(),
-        )
+    def load_chat(self) -> Chat | None:
+        return Chat._load(self.chat_list, store_path=self.chat_store_path())
+
+    async def fetch_chat(self) -> Chat:
+        return await Chat._fetch(self.chat_list, api_path=self.chat_api_path())
 
 
 @final
@@ -383,26 +428,31 @@ class Chats(APIObject):
 
     def set_data(self, data: Json) -> "Chats":
         # convert list (reverse chronological from API) to dict (forward chronological)
-        self._data = {  # pyright: ignore[reportIncompatibleVariableOverride]
+        self._data = {
             cast(str, entry["uuid"]): entry
             for entry in reversed(cast(list[JsonD], data))
         }
         return self
 
     @classmethod
-    async def load(
+    def _load(
         cls,
         *args: Any,
-        ignore_cache: bool = False,
-        api_path: str | None = None,
         store_path: Path | None = None,
+    ) -> "Chats | None":
+        obj = cls(*args)
+        if data := obj.store.load(store_path or obj.store_path()):
+            return obj.set_data(data)
+        else:
+            return None
+
+    @classmethod
+    async def _fetch(
+        cls,
+        *args: Any,
+        api_path: str | None = None,
     ) -> "Chats":
         obj = cls(*args)
-
-        if not ignore_cache:
-            if data := obj.store.load(store_path or obj.store_path()):
-                return obj.set_data(data)
-
         return obj.set_data([])
 
     def get_data(self) -> Json:
@@ -412,7 +462,8 @@ class Chats(APIObject):
     def entry(self, uuid: str) -> ChatsEntry | None:
         if entry := self._data.get(uuid):
             return ChatsEntry(self).set_data(entry)
-        return None
+        else:
+            return None
 
     def cached_entries(self) -> Iterator[ChatsEntry]:
         # yield in reverse chronological order (newest first)
@@ -522,7 +573,7 @@ class Chats(APIObject):
 
 
 @final
-class Organization(Nameable):
+class Organization(Nameable, Loadable):
     __slots__ = (
         "_client",
         "_store",
@@ -547,15 +598,18 @@ class Organization(Nameable):
     def capabilities(self) -> list[str]:
         return cast(list[str], self._data["capabilities"])
 
-    async def chat_list(self, ignore_cache: bool = False) -> Chats:
-        return await Chats.load(self, ignore_cache=ignore_cache)
+    def load_chat_list(self) -> Chats | None:
+        return Chats._load(self)
+
+    async def fetch_chat_list(self) -> Chats:
+        return await Chats._fetch(self)
 
 
 @final
 class Membership(APIObject):
     __slots__ = (
         "account",
-        "_data",  # pyright: ignore[reportIncompatibleVariableOverride]
+        "_data",
     )
 
     account: "Account"
@@ -572,7 +626,6 @@ class Membership(APIObject):
     def store(self) -> Store:
         return self.account.store
 
-    @property
     def organization(self) -> Organization:
         return Organization(self.client, self.store).set_data(
             cast(JsonD, self._data["organization"])
@@ -580,7 +633,7 @@ class Membership(APIObject):
 
 
 @final
-class Account(Nameable):
+class Account(Nameable, Loadable):
     __slots__ = (
         "_client",
         "_store",
@@ -604,6 +657,14 @@ class Account(Nameable):
     def memberships(self) -> Iterator[Membership]:
         for membership in cast(list[JsonD], self._data["memberships"]):
             yield Membership(self).set_data(membership)
+
+    def organization(self, uuid: str) -> Organization | None:
+        for membership in self.memberships():
+            organization = membership.organization()
+            if organization.uuid == uuid:
+                return organization
+
+        return None
 
 
 def truncate(s: str, max_len: int) -> str:
@@ -696,16 +757,32 @@ class Syncer:
         return [task.result() for task in tasks_list]
 
     async def get_chat_lists(self) -> list[Chats]:
-        account = await Account.load(self.client, self.store)
+        old_account = Account.load(self.client, self.store)
+        account = await Account.fetch(self.client, self.store)
 
         async def get_chat_list(
             organization: Organization,
         ) -> Chats:
-            return await organization.chat_list()
+            return organization.load_chat_list() or await organization.fetch_chat_list()
 
         chat_list_fetches: list[Awaitable[Chats]] = []
         for membership in account.memberships():
-            organization = membership.organization
+            organization = membership.organization()
+
+            if (
+                old_account
+                and (old_organization := old_account.organization(organization.uuid))
+                and old_organization.store_path() != organization.store_path()
+            ):
+                print(
+                    f"Renaming organization {old_organization} to {organization.name or organization.uuid}",
+                    file=sys.stderr,
+                )
+                old_dir = self.store.store_dir / old_organization.store_path()
+                new_dir = self.store.store_dir / organization.store_path()
+                with suppress(FileNotFoundError):
+                    old_dir.rename(new_dir)
+
             if "chat" not in organization.capabilities:
                 print(
                     f'Skipping organization {organization} without "chat" capability',
@@ -733,12 +810,13 @@ class Syncer:
         # we must get old_entry *now* and not in the async function below since
         # Chats.new_entries might finish and save the new entry over old_entry!
         old_entry = entry.chat_list.entry(entry.uuid)
+        old_chat = old_entry.load_chat() if old_entry else None
 
         async def _fetch_new_chat() -> Chat:
-            chat = await entry.chat(ignore_cache=True)
+            chat = await entry.fetch_chat()
 
-            if old_entry and old_entry.chat_store_path() != entry.chat_store_path():
-                old_entry.store.delete(old_entry.chat_store_path())
+            if old_chat and old_chat.store_path() != chat.store_path():
+                old_chat.delete_cached()
 
             return chat
 
@@ -815,7 +893,7 @@ async def _main() -> None:
         help="Maximum concurrent connections",
     )
     parser.add_argument(
-        "-s",
+        "-d",
         "--success-delay",
         type=float,
         metavar="DELAY",
