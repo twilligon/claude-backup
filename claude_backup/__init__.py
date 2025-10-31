@@ -207,12 +207,16 @@ class APIObject:
 
     @classmethod
     async def load(
-        cls, *args: Any, api_path: str | None = None, store_path: Path | None = None
+        cls,
+        *args: Any,
+        force_refresh: bool = False,
+        api_path: str | None = None,
+        store_path: Path | None = None,
     ):
         obj = cls(*args)
         api_path = api_path or obj.api_path()
         store_path = store_path or obj.store_path()
-        if data := obj.store.load(store_path):
+        if not force_refresh and (data := obj.store.load(store_path)):
             obj.set_data(data)
         else:
             await obj.refresh()
@@ -349,9 +353,10 @@ class ChatConversationsEntry(Nameable):
     def chat_store_path(self) -> Path:
         return self.chat_conversations.store_path() / self.slug()
 
-    async def chat(self) -> Chat:
+    async def chat(self, force_refresh: bool = False) -> Chat:
         return await Chat.load(
             self.chat_conversations,
+            force_refresh=force_refresh,
             api_path=self.chat_api_path(),
             store_path=self.chat_store_path(),
         )
@@ -563,8 +568,10 @@ class Organization(Nameable):
     def capabilities(self) -> list[str]:
         return cast(list[str], self._data["capabilities"])
 
-    async def chat_conversations(self) -> ChatConversationsList:
-        return await ChatConversationsList.load(self)
+    async def chat_conversations(
+        self, force_refresh: bool = False
+    ) -> ChatConversationsList:
+        return await ChatConversationsList.load(self, force_refresh=force_refresh)
 
 
 class Membership(APIObject):
@@ -742,7 +749,7 @@ class Syncer:
 
         return await self.gather(*chat_conversations_list_fetches)
 
-    def print_chat_entry(self, entry: ChatConversationsEntry) -> None:
+    def print_entry(self, entry: ChatConversationsEntry) -> None:
         name = entry.name or ""
         if self.tty:
             try:
@@ -752,32 +759,45 @@ class Syncer:
             name = truncate(name, width - 36 - 4)
         print(f"{entry.uuid}\t{name}")
 
-    async def get_chats(self) -> AsyncGenerator[Awaitable[Chat], None]:
-        chat_conversations_lists = await self.get_chat_conversations_lists()
+    @staticmethod
+    async def _fetch_new_chat(
+        old_entry: ChatConversationsEntry, entry: ChatConversationsEntry
+    ) -> TODO:
+        chat = await entry.chat(force_refresh=True)
 
-        async with aclosing(
-            aroundrobin(*(ccl.entries() for ccl in chat_conversations_lists))
-        ) as entries:
-            async for entry in entries:
-                self.print_chat_entry(entry)
-                yield entry.chat()
+        if old_entry and old_entry.chat_store_path() != entry.chat_store_path():
+            old_entry.store.delete(old_entry.chat_store_path())
 
-        while needs_refresh := [ccl for ccl in chat_conversations_lists if ccl.unseen]:
+        return chat
+
+    @staticmethod
+    def fetch_new_chat(entry: ChatConversationsEntry) -> TODO:
+        # we must get old_entry *now* and not in async _fetch_new_chat because
+        # otherwise by the time this executes the ChatConversationsList might
+        # have finished yielding new_entries and saved entry over old_entry!
+        old_entry = entry.chat_conversations.entry(entry.uuid)
+
+        return self._fetch_new_chat(old_entry, entry)
+
+    async def new_chat_fetches(self) -> AsyncGenerator[ChatConversationsEntry, None]:
+        needs_refresh = await self.get_chat_conversations_lists()
+
+        page_size = 20  # TODO: kinda stupid to hardcode this
+        while needs_refresh:
             async with aclosing(
-                aroundrobin(*(ccl.new_entries(page_size=1) for ccl in needs_refresh))
+                aroundrobin(*(l.new_entries(page_size) for l in needs_refresh))
             ) as entries:
                 async for entry in entries:
-                    self.print_chat_entry(entry)
-                    yield entry.chat()
+                    self.print_entry(entry)
+                    yield fetch_new_chat(entry)
+
+            needs_refresh = [l for l in needs_refresh if l.unseen]
+            page_size = 1  # TODO: stupid
 
     async def sync_all(self) -> None:
         async with aclosing(self.as_completed(self.get_chats())) as tasks:
             async for task in tasks:
-                chat = await task
-                old_entry = chat.chat_conversations.entry(chat.uuid)
-                chat.save()
-                if old_entry and old_entry.slug() != chat.slug():
-                    chat.store.delete(old_entry.chat_store_path())
+                await task
 
 
 @dataclass(slots=True)
@@ -870,6 +890,7 @@ async def _main() -> None:
     if isinstance(args.backup_dir, DefaultPath):
         args.backup_dir = args.backup_dir.path
 
+    # TODO: revamp force_refresh to basically just create a new backup_dir maybe?
     store = Store(store_dir=Path(args.backup_dir), force_refresh=args.force_refresh)
 
     session_key = os.environ.get("CLAUDE_SESSION_KEY") or get_session_key()
