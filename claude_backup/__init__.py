@@ -97,12 +97,21 @@ class Client:
         retry_delay = self.min_retry_delay
         r = None
         for _ in range(self.retries):
+            # i have never seen a 429 or in fact a 4xx error of any kind from
+            # this api, nor ratelimit headers or fields in the returned stuff
+            # so we will have to cross our fingers and hope our rate and conn
+            # limiting is enough not to break anything...
             async with self.session.get(
                 f"https://claude.ai/api/{path}", allow_redirects=False
             ) as r:
-                if r.ok:
+                if r.status in range(200, 300):
                     data = cast(Json, await r.json())
                     return data
+                elif r.status in range(300, 400):
+                    raise ClientError(
+                        f"Unexpected redirect (HTTP {r.status}) - " +
+                        "session key may be invalid or API endpoint changed"
+                    )
                 else:
                     await asyncio.sleep(retry_delay)
                     retry_delay = min(retry_delay * 2, self.max_retry_delay)
