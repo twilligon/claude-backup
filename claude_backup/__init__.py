@@ -187,8 +187,8 @@ class Store:
 
 class APIObject:
     _client: Client  # pyright: ignore[reportUninitializedInstanceVariable]
-    _store: Store    # pyright: ignore[reportUninitializedInstanceVariable]
-    _data: Json      # pyright: ignore[reportUninitializedInstanceVariable]
+    _store: Store  # pyright: ignore[reportUninitializedInstanceVariable]
+    _data: Json  # pyright: ignore[reportUninitializedInstanceVariable]
 
     @property
     def client(self) -> Client:
@@ -212,7 +212,10 @@ class APIObject:
         obj = cls(*args)
         api_path = api_path or obj.api_path()
         store_path = store_path or obj.store_path()
-        obj.set_data(obj.store.load(store_path) or await obj.client.refresh(api_path))
+        if data := obj.store.load(store_path):
+            obj.set_data(data)
+        else:
+            await obj.refresh()
         return obj
 
     def api_path(self) -> str:
@@ -222,7 +225,9 @@ class APIObject:
         raise NotImplementedError
 
     async def refresh(self: T_APIObject) -> T_APIObject:
-        return self.set_data(await self.client.refresh(self.api_path()))
+        self.set_data(await self.client.refresh(self.api_path()))
+        self.save()
+        return self
 
     def save(self) -> None:
         self.store.save(self.store_path(), self.get_data())
@@ -267,7 +272,9 @@ class Nameable(APIObject):
 
 
 class Chat(Nameable):
-    __slots__: ClassVar[tuple[str, str]] = (  # pyright: ignore[reportIncompatibleVariableOverride]
+    __slots__: ClassVar[
+        tuple[str, str]
+    ] = (  # pyright: ignore[reportIncompatibleVariableOverride]
         "chat_conversations",
         "_data",
     )
@@ -309,7 +316,9 @@ class Chat(Nameable):
 
 
 class ChatConversationsEntry(Nameable):
-    __slots__: ClassVar[tuple[str, str]] = (  # pyright: ignore[reportIncompatibleVariableOverride]
+    __slots__: ClassVar[
+        tuple[str, str]
+    ] = (  # pyright: ignore[reportIncompatibleVariableOverride]
         "chat_conversations",
         "_data",
     )
@@ -397,14 +406,14 @@ class ChatConversationsList(APIObject):
         return list(reversed(self._data.values()))
 
     def entry(self, uuid: str) -> ChatConversationsEntry | None:
-        if data := self._data.get(uuid):
-            return ChatConversationsEntry(self).set_data(data)
+        if entry := self._data.get(uuid):
+            return ChatConversationsEntry(self).set_data(entry)
         return None
 
     def cached_entries(self) -> Iterator[ChatConversationsEntry]:
         # yield in reverse chronological order (newest first)
-        for chat_data in reversed(self._data.values()):
-            yield ChatConversationsEntry(self).set_data(chat_data)
+        for entry in reversed(self._data.values()):
+            yield ChatConversationsEntry(self).set_data(entry)
 
     async def entries(self) -> AsyncGenerator[ChatConversationsEntry, None]:
         seen: set[ChatConversationsEntry] = set()
@@ -420,6 +429,16 @@ class ChatConversationsList(APIObject):
     async def new_entries(
         self, page_size: int = 20
     ) -> AsyncGenerator[ChatConversationsEntry, None]:
+        # if no data/first fetch, fetch all entries---they're all new
+        if not self._data:
+            self.set_data(await self.client.refresh(self.api_path()))
+            self.save()
+
+            for entry in self.cached_entries():
+                yield entry
+
+            return
+
         # "sliding window sync" (chat_conversations is recently-modified-first)
         new: dict[str, JsonD] = {}
 
@@ -427,8 +446,7 @@ class ChatConversationsList(APIObject):
         limit = self.unseen + 1 if self.unseen else page_size
         self.unseen = 0
 
-        if not limit:
-            return
+        assert limit
 
         while True:
             page = cast(
@@ -439,61 +457,64 @@ class ChatConversationsList(APIObject):
             )
 
             done = False
-            for chat in page:
-                uuid = cast(str, chat["uuid"])
+            for entry in page:
+                uuid = cast(str, entry["uuid"])
 
-                if new_chat := new.get(uuid):
+                if new_entry := new.get(uuid):
                     # this api doesn't have cursors or snapshots or anything :(
-                    # so if a chat is created or updated *between our fetching
-                    # one page and the next*, there is a *new* most recent chat
-                    # which bumps all the others down and causes the last chat
-                    # of the prior page also to be the first chat of the next:
+                    # so if an entry's created or updated *between our fetching
+                    # one page and the next*, there's a *new* most recent entry
+                    # which bumps all the others down and causes the last entry
+                    # of the prior page also to be the first entry of the next:
                     #
-                    # page 1 sees [A B]: [A B] C D E
-                    # chat D is updated: D A B C E
-                    # page 2 sees [B C]: D A [B C] E
+                    # page 1 sees [A B]:  [A B] C D E
+                    # entry D is updated: D A B C E
+                    # page 2 sees [B C]:  D A [B C] E
                     #
                     # of course this can happen multiple times, and in fact the
-                    # number of times it happens is exactly how many new chats
-                    # we expect would be at offset 0 were we to fetch again. so
-                    # update self.unseen as a hint to future new_entries calls
-                    # that there are likely exactly self.unseen new or changed
+                    # number of times it happens is the count of new entries we
+                    # would expect at offsets 0 through N on our next fetch! so
+                    # update self.unseen as a hint to the next new_entries call
+                    # that there are likely exactly self.unseen new or changed.
                     self.unseen += 1
 
                     # ...but if the above hypothesis is wrong for some perverse
                     # reason like all the chats up until now being rewritten in
-                    # a specific order behind our backs, still yield the chat:
+                    # a specific order behind our backs, still yield the entry:
                     #
                     # page 1 sees [A B]:  [A B] C D E
                     # B, D, & A updated:  A' D' B' C E
                     # page 2 sees [B' C]: A' D' [B' C] E
                     #
                     # so in case the cartesian daemon of claude chats is out to
-                    # get us, we need to yield B' even if we wouldn't yield B
-                    if chat == new_chat:
+                    # get us, we need to yield B' even if we wouldn't yield B.
+                    if entry == new_entry:
                         continue
-                elif chat == self._data.get(uuid):
-                    # chat was in a chronological list of chats we already had,
-                    # so we must also have all chats before it, so we are done
+                elif entry == self._data.get(uuid):
+                    # entry was in a chronological list of ones we already had,
+                    # so we must also have all entries before it, so we're done
                     done = True
                     break
 
-                new[uuid] = chat
-                yield ChatConversationsEntry(self).set_data(chat)
+                new[uuid] = entry
+                yield ChatConversationsEntry(self).set_data(entry)
 
             # we *ought* to break from this loop by seeing something from prior
-            # refreshes, but just in case e.g. all chats in self._data are gone
-            # on claude.ai (or more likely moved/counted in self.unseen) we're
+            # refreshes, but just in case e.g. all seen entries were deleted on
+            # claude.ai (or more likely moved/counted in self.unseen)... we are
             # also definitely done if they ran out of items for this page
             if done or len(page) < limit:
                 break
 
-            # double it and give it to the next person
+            # if not, double it and give it to the next person
             offset += limit
             limit *= 2
 
-        # for efficient inserts, self._data is in "forward-chronological" order
-        # which means we need to merge reverse-chronological new in reverse. ez
+        # dicts preserve order, but because there is no dict.prepend(), we need
+        # self._data to be in "forward-chronological" order so newly discovered
+        # chats belong at the "end" w/r/t iteration order. thus we insert items
+        # from necessarily reverse-chronological new in reverse so self._data's
+        # still entirely in chronological order. this may be a bit galaxy brain
         self._data.update(reversed(new.items()))
         self.save()
 
@@ -516,7 +537,9 @@ class ChatConversationsList(APIObject):
 
 
 class Organization(Nameable):
-    __slots__: ClassVar[tuple[str, str, str]] = (  # pyright: ignore[reportIncompatibleVariableOverride]
+    __slots__: ClassVar[
+        tuple[str, str, str]
+    ] = (  # pyright: ignore[reportIncompatibleVariableOverride]
         "_client",
         "_store",
         "_data",
@@ -578,7 +601,9 @@ class Membership(APIObject):
 
 
 class Account(Nameable):
-    __slots__: ClassVar[tuple[str, str, str]] = (  # pyright: ignore[reportIncompatibleVariableOverride]
+    __slots__: ClassVar[
+        tuple[str, str, str]
+    ] = (  # pyright: ignore[reportIncompatibleVariableOverride]
         "_client",
         "_store",
         "_data",
@@ -599,8 +624,8 @@ class Account(Nameable):
         return Path("account")
 
     def memberships(self) -> Iterator[Membership]:
-        for m_data in cast(list[JsonD], self._data["memberships"]):
-            yield Membership(self).set_data(m_data)
+        for membership in cast(list[JsonD], self._data["memberships"]):
+            yield Membership(self).set_data(membership)
 
 
 def truncate(s: str, max_len: int) -> str:
@@ -636,14 +661,14 @@ class Syncer:
     ) -> AsyncGenerator[asyncio.Task[T], None]:
         pending: set[asyncio.Task[T]] = set()
 
-        for _ in range(self.connections):
-            try:
-                awaitable = await anext(awaitables)
-                pending.add(asyncio.ensure_future(awaitable))
-            except StopAsyncIteration:
-                break
-
         try:
+            for _ in range(self.connections):
+                try:
+                    awaitable = await anext(awaitables)
+                    pending.add(asyncio.ensure_future(awaitable))
+                except StopAsyncIteration:
+                    break
+
             while pending:
                 done, pending = await asyncio.wait(
                     pending, return_when=asyncio.FIRST_COMPLETED
@@ -666,6 +691,9 @@ class Syncer:
             await asyncio.gather(*pending, return_exceptions=True)
 
             raise
+        finally:
+            if hasattr(awaitables, "aclose"):
+                await awaitables.aclose()
 
     def as_completed(
         self, awaitables: Iterable[Awaitable[T]] | AsyncIterator[Awaitable[T]]
@@ -694,7 +722,6 @@ class Syncer:
 
     async def get_chat_conversations_lists(self) -> list[ChatConversationsList]:
         account = await Account.load(self.client, self.store)
-        account.save()
 
         async def get_chat_conversations_list(
             organization: Organization,
@@ -725,7 +752,7 @@ class Syncer:
             name = truncate(name, width - 36 - 4)
         print(f"{entry.uuid}\t{name}")
 
-    async def get_chats(self) -> AsyncIterator[Awaitable[Chat]]:
+    async def get_chats(self) -> AsyncGenerator[Awaitable[Chat], None]:
         chat_conversations_lists = await self.get_chat_conversations_lists()
 
         async with aclosing(
