@@ -5,6 +5,7 @@
 # pyright: reportPrivateUsage=false, reportIncompatibleVariableOverride=false
 
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
+from asyncio import Task
 from collections import defaultdict
 from collections.abc import (
     AsyncGenerator,
@@ -43,6 +44,7 @@ __all__ = (
     "Store",
     "Syncer",
     "APIObject",
+    "Immutable",
     "Nameable",
     "Loadable",
     "Account",
@@ -276,6 +278,8 @@ class APIObject:
     def delete_cached(self) -> None:
         self.store.delete(self.store_path())
 
+
+class Immutable(APIObject):
     def __hash__(self) -> int:
         return hash(
             json.dumps(
@@ -370,7 +374,7 @@ class Chat(Nameable):
 
 
 @final
-class ChatsEntry(Nameable):
+class ChatsEntry(Nameable, Immutable):
     __slots__ = (
         "chat_list",
         "_data",
@@ -472,7 +476,7 @@ class Chats(APIObject):
             yield ChatsEntry(self).set_data(entry)
 
     async def new_entries(
-        self, page_size: int = 20
+        self, page_size: int = 20, save: bool = True
     ) -> AsyncGenerator[ChatsEntry, None]:
         # if no data/first fetch, fetch all entries---they're all new
         if not self._data:
@@ -481,7 +485,8 @@ class Chats(APIObject):
             for entry in self.cached_entries():
                 yield entry
 
-            self.save()
+            if save:
+                self.save()
             return
 
         # "sliding window" sync (chat_conversations is recently-modified-first)
@@ -561,7 +566,8 @@ class Chats(APIObject):
         # from necessarily reverse-chronological new in reverse so self._data's
         # still entirely in chronological order. this may be a bit galaxy brain
         self._data.update(reversed(new.items()))
-        self.save()
+        if save:
+            self.save()
 
     async def refresh(self) -> "Chats":
         async for _ in self.new_entries():
@@ -604,7 +610,7 @@ class Organization(Nameable, Loadable):
 
 
 @final
-class Membership(APIObject):
+class Membership(Immutable):
     __slots__ = (
         "account",
         "_data",
@@ -681,7 +687,9 @@ async def aroundrobin(*iterators: AsyncGenerator[T, None]) -> AsyncGenerator[T, 
                     yield await anext(it)
                     done = False
     finally:
-        await asyncio.gather(*(it.aclose() for it in iterators), return_exceptions=True)
+        for it in iterators:
+            with suppress(BaseException):
+                await it.aclose()
 
 
 @dataclass(slots=True)
@@ -694,8 +702,8 @@ class Syncer:
 
     async def _as_completed(
         self, awaitables: AsyncIterator[Awaitable[T]]
-    ) -> AsyncGenerator[asyncio.Task[T], None]:
-        pending: set[asyncio.Task[T]] = set()
+    ) -> AsyncGenerator[Task[T], None]:
+        pending: set[Task[T]] = set()
 
         try:
             for _ in range(self.connections):
@@ -723,9 +731,9 @@ class Syncer:
         except BaseException:
             for task in pending:
                 task.cancel()
-
-            await asyncio.gather(*pending, return_exceptions=True)
-
+            for task in pending:
+                with suppress(BaseException):
+                    await task
             raise
         finally:
             if isinstance(awaitables, AsyncGenerator):
@@ -733,7 +741,7 @@ class Syncer:
 
     def as_completed(
         self, awaitables: Iterable[Awaitable[T]] | AsyncIterator[Awaitable[T]]
-    ) -> AsyncGenerator[asyncio.Task[T], None]:
+    ) -> AsyncGenerator[Task[T], None]:
         async def asyncify(
             iterable: Iterable[Awaitable[T]],
         ) -> AsyncGenerator[Awaitable[T], None]:
@@ -796,7 +804,7 @@ class Syncer:
         print(f"{entry.uuid}\t{name}")
 
     @staticmethod
-    def fetch_new_chat(entry: ChatsEntry) -> Awaitable[Chat]:
+    def fetch_new_chat(entry: ChatsEntry) -> Task[Chat]:
         # we must get old_entry *now* and not in the async function below since
         # Chats.new_entries might finish and save the new entry over old_entry!
         old_entry = entry.chat_list.entry(entry.uuid)
@@ -810,22 +818,65 @@ class Syncer:
 
             return chat
 
-        return _fetch_new_chat()
+        return asyncio.create_task(_fetch_new_chat())
 
-    async def new_chat_fetches(self) -> AsyncGenerator[Awaitable[Chat], None]:
-        needs_refresh: list[Chats] = [
-            organization.chat_list() async for organization in self.get_organizations()
+    async def new_chat_fetches(self) -> AsyncGenerator[Task[Chat], None]:
+        needs_refresh: list[tuple[Chats, list[Task[Chat]], Task[None]]] = [
+            (organization.chat_list(), [], asyncio.create_task(asyncio.sleep(0)))
+            async for organization in self.get_organizations()
         ]
 
-        while needs_refresh:
-            async with aclosing(
-                aroundrobin(*map(Chats.new_entries, needs_refresh))
-            ) as entries:
-                async for entry in entries:
-                    self.print_entry(entry)
-                    yield self.fetch_new_chat(entry)
+        try:
+            while needs_refresh:
+                async with aclosing(
+                    aroundrobin(
+                        *(
+                            (
+                                (entry, fetches)
+                                async for entry in chats.new_entries(save=False)
+                            )
+                            for chats, fetches, _ in needs_refresh
+                        )
+                    )
+                ) as items:
+                    async for entry, fetches in items:
+                        fetch = self.fetch_new_chat(entry)
+                        fetches.append(fetch)
+                        self.print_entry(entry)
+                        yield fetch
 
-            needs_refresh = [l for l in needs_refresh if l.unseen]
+                for _, _, old_save in needs_refresh:
+                    if old_save:
+                        old_save.cancel()
+
+                async def save_after_fetches(
+                    chats: Chats, fetches: list[Task[Chat]]
+                ) -> None:
+                    for fetch in fetches:
+                        await fetch
+
+                    chats.save()
+
+                needs_refresh = [
+                    (
+                        chats,
+                        [],
+                        asyncio.create_task(save_after_fetches(chats, fetches)),
+                    )
+                    for chats, fetches, _ in needs_refresh
+                    if chats.unseen
+                ]
+
+            for _, _, save in needs_refresh:
+                await save
+        except BaseException:
+            for _, _, save in needs_refresh:
+                save.cancel()
+
+                with suppress(BaseException):
+                    await save
+
+            raise
 
     async def sync_all(self) -> None:
         async with aclosing(self.as_completed(self.new_chat_fetches())) as tasks:
