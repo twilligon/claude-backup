@@ -15,8 +15,9 @@ from collections.abc import (
     Iterable,
     Iterator,
 )
-from dataclasses import dataclass, field
 from contextlib import aclosing, suppress
+from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from tempfile import NamedTemporaryFile, TemporaryDirectory
 from types import TracebackType
@@ -46,6 +47,7 @@ __all__ = (
     "APIObject",
     "Immutable",
     "Nameable",
+    "Timestamped",
     "Loadable",
     "Account",
     "Membership",
@@ -183,7 +185,9 @@ class Store:
 
         (self.store_dir / "version").write_text(f"{__version__}\n")
 
-    def save(self, path: Path, data: Json) -> None:
+    def save(
+        self, path: Path, data: Json, mtime: datetime | float | None = None
+    ) -> None:
         cache_file = self.store_dir / path.with_suffix(".json")
         cache_file.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
 
@@ -197,6 +201,10 @@ class Store:
             )
             f.flush()
             Path(f.name).rename(cache_file)
+
+        if mtime:
+            mtime = mtime.timestamp() if isinstance(mtime, datetime) else mtime
+            os.utime(cache_file, (mtime, mtime))
 
     def load(self, path: Path) -> Json | None:
         if self.ignore_cache:
@@ -236,6 +244,9 @@ class APIObject:
     def get_data(self) -> Json:
         return self._data
 
+    def get_mtime(self) -> datetime | float | None:
+        return None
+
     def set_data(self: T_APIObject, data: Json) -> T_APIObject:
         self._data = data
         return self
@@ -272,7 +283,7 @@ class APIObject:
         return self.set_data(await self.client.refresh(self.api_path())).save()
 
     def save(self: T_APIObject) -> T_APIObject:
-        self.store.save(self.store_path(), self.get_data())
+        self.store.save(self.store_path(), self.get_data(), self.get_mtime())
         return self
 
     def delete_cached(self) -> None:
@@ -326,6 +337,27 @@ class Nameable(APIObject):
         return self.uuid
 
 
+class Timestamped(APIObject):
+    _data: JsonD
+
+    @property
+    def created_at(self) -> datetime | None:
+        try:
+            return datetime.fromisoformat(cast(str, self._data["created_at"]))
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    @property
+    def updated_at(self) -> datetime | None:
+        try:
+            return datetime.fromisoformat(cast(str, self._data["updated_at"]))
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    def get_mtime(self) -> datetime | float | None:
+        return self.updated_at
+
+
 T_Loadable = TypeVar("T_Loadable", bound="Loadable")
 
 
@@ -340,7 +372,7 @@ class Loadable(APIObject):
 
 
 @final
-class Chat(Nameable):
+class Chat(Timestamped, Nameable):
     __slots__ = (
         "chat_list",
         "_data",
