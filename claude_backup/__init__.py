@@ -100,7 +100,7 @@ class Client:
     async def refresh(self, path: str) -> Json:
         retry_delay = self.min_retry_delay
         r = None
-        for _ in range(self.retries):
+        for retry in range(self.retries):
             # i have never seen a 429 or in fact a 4xx error of any kind from
             # this api, nor ratelimit headers or fields in the returned stuff
             # so we will have to cross our fingers and hope our rate and conn
@@ -117,6 +117,10 @@ class Client:
                         + "session key may be invalid or API endpoint changed"
                     )
                 else:
+                    print(
+                        f"Error fetching {r.url} (try {retry+1} of {self.retries}): {r.status} {r.reason}",
+                        file=sys.stderr,
+                    )
                     await asyncio.sleep(retry_delay)
                     retry_delay = min(retry_delay * 2, self.max_retry_delay)
 
