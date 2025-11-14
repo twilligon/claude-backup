@@ -73,6 +73,8 @@ By default, `claude-backup` attempts to authenticate to `claude.ai` by extractin
 
 As this tool demonstrates **anyone with this cookie is authenticated as you on `claude.ai`** so be careful and never give this to anyone or anything you do not trust! It might even be worth keeping out of `history` by loading it straight from your clipboard with e.g. `CLAUDE_SESSION_KEY="$(wl-paste)"`, though the exact command varies by platform. I'm sure Claude knows which you should use ;)
 
+As of recently(?) `claude.ai` is behind Cloudflare, and this no longer works great without VPNs. I swore to myself I was off the scrape-things-that-don't-want-to-be-scraped grind, so I recommend running `claude-backup` from a non-sus IP, bumping `--success-delay`, and lowering `--connections`. Any further workarounds are left as an exercise to the reader...
+
 ## Install
 
 The blazing fast and memory safe way:
@@ -113,7 +115,7 @@ The bleeding-edge way:
                             Maximum concurrent connections (default: 6)
       -d, --success-delay DELAY
                             Delay after successful request in seconds (default:
-                            0.1)
+                            0.25)
       -r, --retries RETRIES
                             Number of retries for API requests (default: 10)
       --min-retry-delay DELAY

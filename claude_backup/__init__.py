@@ -729,7 +729,7 @@ class Syncer:
     client: Client
     store: Store
     connections: int = 6
-    success_delay: float = 0.1
+    success_delay: float = 0.25
     tty: bool = field(default_factory=sys.stdout.isatty)
 
     async def _as_completed(
