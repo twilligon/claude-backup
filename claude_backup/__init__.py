@@ -31,7 +31,14 @@ import sys
 
 from fake_useragent import UserAgent
 from platformdirs import user_data_dir
-from aiohttp import ClientError, ClientSession, CookieJar, TCPConnector
+from aiohttp import (
+    ClientError,
+    ClientResponseError,
+    ClientSession,
+    ClientTimeout,
+    CookieJar,
+    TCPConnector,
+)
 from yarl import URL
 import browser_cookie3  # pyright: ignore[reportMissingTypeStubs]
 
@@ -81,7 +88,10 @@ class Client:
         jar.update_cookies({"sessionKey": self.session_key}, URL("https://claude.ai/"))
 
         self.session = ClientSession(
-            headers=headers, cookie_jar=jar, connector=TCPConnector(limit=0)
+            headers=headers,
+            cookie_jar=jar,
+            connector=TCPConnector(limit=0),
+            timeout=ClientTimeout(total=None),
         )
 
     async def __aenter__(self):
@@ -97,36 +107,45 @@ class Client:
     ) -> bool | None:
         return await self.session.__aexit__(exc_type, exc_val, exc_tb)
 
+    async def _refresh(self, path: str) -> Json:
+        # i have never seen a 429 or in fact a 4xx error of any kind from this
+        # api, nor ratelimit headers or fields on the returned stuff (i've seen
+        # 403 Forbidden from cloudflare, in front of claude.ai, but only behind
+        # vpn i.e. totally blocked, and even then no ratelimit headers), so we
+        # will have to cross our fingers and hope our rate and conn limiting is
+        # enough not to break anything...
+        async with self.session.get(
+            f"https://claude.ai/api/{path}",
+            allow_redirects=False,  # csrf defense for very silly threat model
+        ) as r:
+            # explicitly check r.status instead of using r.raise_for_status
+            # because we want to raise for r.status >= 300 not just >= 400
+            if r.status in range(200, 300):
+                return cast(Json, await r.json())
+
+            raise ClientResponseError(
+                r.request_info,
+                r.history,
+                status=r.status,
+                message=r.reason,
+                headers=r.headers,
+            )
+
     async def refresh(self, path: str) -> Json:
         retry_delay = self.min_retry_delay
-        r = None
-        for retry in range(self.retries):
-            # i have never seen a 429 or in fact a 4xx error of any kind from
-            # this api, nor ratelimit headers or fields in the returned stuff
-            # so we will have to cross our fingers and hope our rate and conn
-            # limiting is enough not to break anything...
-            async with self.session.get(
-                f"https://claude.ai/api/{path}", allow_redirects=False
-            ) as r:
-                if r.status in range(200, 300):
-                    data = cast(Json, await r.json())
-                    return data
-                elif r.status in range(300, 400):
-                    raise ClientError(
-                        f"Unexpected redirect (HTTP {r.status}) - "
-                        + "session key may be invalid or API endpoint changed"
-                    )
-                else:
-                    print(
-                        f"Error fetching {r.url} (try {retry+1} of {self.retries}): {r.status} {r.reason}",
-                        file=sys.stderr,
-                    )
-                    await asyncio.sleep(retry_delay)
-                    retry_delay = min(retry_delay * 2, self.max_retry_delay)
+        for retry in range(self.retries - 1):
+            try:
+                return await self._refresh(path)
+            except Exception as e:
+                print(
+                    f"Error fetching {path} (try {retry+1} of {self.retries}, "
+                    + f"waiting {round(retry_delay)}s): {e}",
+                    file=sys.stderr,
+                )
+                await asyncio.sleep(retry_delay)
+                retry_delay = min(retry_delay * 2, self.max_retry_delay)
 
-        assert r is not None  # never happens unless self.retries <= 0
-        r.raise_for_status()
-        raise ClientError  # pyright doesn't know above always throws. sad!
+        return await self._refresh(path)
 
 
 @dataclass(slots=True)
