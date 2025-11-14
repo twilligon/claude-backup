@@ -42,7 +42,7 @@ from aiohttp import (
 from yarl import URL
 import browser_cookie3  # pyright: ignore[reportMissingTypeStubs]
 
-__version__ = "0.1.8"
+__version__ = "0.1.8"  # TODO: 0.1.8->0.1.9 migration should set mtimes
 
 __all__ = (
     "__version__",
