@@ -41,7 +41,7 @@ from aiohttp import (
 from yarl import URL
 import browser_cookie3  # pyright: ignore[reportMissingTypeStubs]
 
-__version__ = "0.1.11"  # NB: remember to update MIGRATIONS on version bump!
+__version__ = "0.1.12"  # NB: remember to update MIGRATIONS on version bump!
 
 __all__ = (
     "__version__",
