@@ -159,13 +159,24 @@ class Store:
     def _set_chat_mtimes(self) -> None:
         if account := Account.load(None, self):  # pyright: ignore[reportArgumentType]
             for membership in account.memberships():
-                org = membership.organization()
-                if chats := org.chat_list():
+                if chats := membership.organization().chat_list():
                     for entry in chats.cached_entries():
                         if chat := entry.load_chat():
                             self.save(
                                 chat.store_path(), chat.get_data(), chat.get_mtime()
                             )
+
+    def _fix_bad_slug_paths(self) -> None:
+        if account := Account.load(None, self):  # pyright: ignore[reportArgumentType]
+            for membership in account.memberships():
+                if chats := membership.organization().chat_list():
+                    for entry in chats.cached_entries():
+                        old_path = entry.chat_store_path().with_suffix("")
+                        if entry.chat_store_path() != old_path and (
+                            chat := Chat._load(chats, store_path=old_path)
+                        ):
+                            chat.save()
+                            self.delete(old_path)
 
     MIGRATIONS: ClassVar[
         defaultdict[str | None, tuple[str, Callable[["Store"], None]]]
@@ -177,6 +188,7 @@ class Store:
             "0.1.8": ("0.1.9", _set_chat_mtimes),
             "0.1.9": ("0.1.10", lambda _: None),
             "0.1.10": ("0.1.11", lambda _: None),
+            "0.1.11": ("0.1.12", _fix_bad_slug_paths),
         },
     )
 
