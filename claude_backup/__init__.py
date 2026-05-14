@@ -494,18 +494,6 @@ class Chats(APIObject):
         self._data = {entry.uuid: entry for entry in entries}
         return self
 
-    @classmethod
-    def _load(
-        cls,
-        *args: Any,
-        store_path: Path | None = None,
-    ) -> "Chats | None":
-        obj = cls(*args)
-        if data := obj.store.load(store_path or obj.store_path()):
-            return obj.set_data(data)
-        else:
-            return None
-
     def get_data(self) -> Json:
         # convert dict (forward chronological) back to list (reverse chronological)
         return [entry._data for entry in reversed(self._data.values())]
