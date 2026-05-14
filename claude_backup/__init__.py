@@ -19,7 +19,7 @@ from contextlib import aclosing, suppress
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from tempfile import NamedTemporaryFile, TemporaryDirectory
+from tempfile import NamedTemporaryFile
 from types import TracebackType
 from typing import Any, ClassVar, TypeAlias, TypeVar, cast, final
 from uuid import UUID
@@ -32,7 +32,6 @@ import sys
 from fake_useragent import UserAgent
 from platformdirs import user_data_dir
 from aiohttp import (
-    ClientError,
     ClientResponseError,
     ClientSession,
     ClientTimeout,
@@ -42,7 +41,7 @@ from aiohttp import (
 from yarl import URL
 import browser_cookie3  # pyright: ignore[reportMissingTypeStubs]
 
-__version__ = "0.1.8"  # TODO: 0.1.8->0.1.9 migration should set mtimes
+__version__ = "0.1.8"
 
 __all__ = (
     "__version__",
@@ -127,7 +126,7 @@ class Client:
                 r.request_info,
                 r.history,
                 status=r.status,
-                message=r.reason,
+                message=r.reason or "",
                 headers=r.headers,
             )
 
@@ -150,16 +149,31 @@ class Client:
 
 @dataclass(slots=True)
 class Store:
-    @staticmethod
-    def _cp(old: str | Path, new: str | Path) -> None:
-        shutil.copytree(old, new, dirs_exist_ok=True)
+    def _wipe(self) -> None:
+        for entry in self.store_dir.iterdir():
+            if entry.is_dir():
+                shutil.rmtree(entry)
+            else:
+                entry.unlink()
+
+    def _set_chat_mtimes(self) -> None:
+        if account := Account.load(None, self):  # pyright: ignore[reportArgumentType]
+            for membership in account.memberships():
+                org = membership.organization()
+                if chats := org.chat_list():
+                    for entry in chats.cached_entries():
+                        if chat := entry.load_chat():
+                            self.save(chat.store_path(), chat.get_data(), chat.get_mtime())
 
     MIGRATIONS: ClassVar[
-        defaultdict[str | None, tuple[str, Callable[[str, str], None]]]
+        defaultdict[str | None, tuple[str, Callable[["Store"], None]]]
     ] = defaultdict(
         # migrate from unknown versions by not migrating anything/starting over
-        lambda: (__version__, lambda old, new: None),
-        {"0.1.7": ("0.1.8", _cp)},  # if format unchanged, migrate whole store
+        lambda: (__version__, Store._wipe),
+        {
+            "0.1.7": ("0.1.8", lambda _: None),  # if format unchanged, migrate whole store
+            "0.1.8": ("0.1.9", _set_chat_mtimes),
+        },
     )
 
     store_dir: Path
@@ -171,42 +185,16 @@ class Store:
             (self.store_dir / "version").write_text(f"{__version__}\n")
             return
 
-        version = None
-        with suppress(FileNotFoundError):
+        try:
             version = (self.store_dir / "version").read_text().strip()
-
-        if version == __version__:
+        except FileNotFoundError:
+            (self.store_dir / "version").write_text(f"{__version__}\n")
             return
 
-        with (
-            # TemporaryDirectory uses 0700 perms, which we want for private chats
-            TemporaryDirectory(
-                prefix=f"{self.store_dir.name}-",
-                dir=self.store_dir.parent,
-            ) as old_store_dir,
-            TemporaryDirectory(
-                prefix=f"{self.store_dir.name}-",
-                dir=self.store_dir.parent,
-            ) as new_store_dir,
-        ):
-            self._cp(self.store_dir, old_store_dir)
-
-            while version != __version__:
-                version, migrate_step = self.MIGRATIONS[version]
-                migrate_step(old_store_dir, new_store_dir)
-                old_store_dir, new_store_dir = new_store_dir, old_store_dir
-                shutil.rmtree(new_store_dir)
-                Path(new_store_dir).mkdir(mode=0o700)
-
-            with TemporaryDirectory(
-                prefix=f"{self.store_dir.name}-",
-                dir=self.store_dir.parent,
-            ) as adjacent_temp:
-                self._cp(old_store_dir, adjacent_temp)
-                shutil.rmtree(self.store_dir)
-                Path(adjacent_temp).rename(self.store_dir)
-
-        (self.store_dir / "version").write_text(f"{__version__}\n")
+        while version != __version__:
+            version, migrate_step = self.MIGRATIONS[version]
+            migrate_step(self)
+            (self.store_dir / "version").write_text(f"{version}\n")
 
     def save(
         self, path: Path, data: Json, mtime: datetime | float | None = None
