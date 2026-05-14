@@ -35,3 +35,12 @@ claude-backup = "claude_backup:main"
 
 [project.urls]
 Repository = "https://github.com/twilligon/claude-backup"
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
