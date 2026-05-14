@@ -41,7 +41,7 @@ from aiohttp import (
 from yarl import URL
 import browser_cookie3  # pyright: ignore[reportMissingTypeStubs]
 
-__version__ = "0.1.9"
+__version__ = "0.1.10"
 
 __all__ = (
     "__version__",
@@ -175,6 +175,7 @@ class Store:
         {
             "0.1.7": ("0.1.8", lambda _: None),
             "0.1.8": ("0.1.9", _set_chat_mtimes),
+            "0.1.9": ("0.1.10", lambda _: None),
         },
     )
 
