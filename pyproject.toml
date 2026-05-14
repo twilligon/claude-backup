@@ -35,4 +35,3 @@ claude-backup = "claude_backup:main"
 
 [project.urls]
 Repository = "https://github.com/twilligon/claude-backup"
-Issues = "https://github.com/twilligon/claude-backup/issues"
