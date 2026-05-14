@@ -74,7 +74,7 @@ T_APIObject = TypeVar("T_APIObject", bound="APIObject")
 
 @dataclass(slots=True)
 class Client:
-    session_key: str
+    session_key: str = field(repr=False)
     retries: int = 10
     min_retry_delay: float = 1.0
     max_retry_delay: float = 60.0
@@ -119,7 +119,7 @@ class Client:
         ) as r:
             # explicitly check r.status instead of using r.raise_for_status
             # because we want to raise for r.status >= 300 not just >= 400
-            if r.status in range(200, 300):
+            if 200 <= r.status < 300:
                 return cast(Json, await r.json())
 
             raise ClientResponseError(
@@ -138,7 +138,7 @@ class Client:
             except Exception as e:
                 print(
                     f"Error fetching {path} (try {retry+1} of {self.retries}, "
-                    + f"waiting {round(retry_delay)}s): {e}",
+                    + f"waiting {retry_delay:.1f}s): {e}",
                     file=sys.stderr,
                 )
                 await asyncio.sleep(retry_delay)
@@ -157,6 +157,8 @@ class Store:
                 entry.unlink()
 
     def _set_chat_mtimes(self) -> None:
+        self._fix_bad_slug_paths()
+
         if account := Account.load(None, self):  # pyright: ignore[reportArgumentType]
             for membership in account.memberships():
                 if chats := membership.organization().chat_list():
@@ -238,7 +240,7 @@ class Store:
                 Path(f.name).unlink(missing_ok=True)
                 raise
 
-        if mtime:
+        if mtime is not None:
             mtime = mtime.timestamp() if isinstance(mtime, datetime) else mtime
             os.utime(cache_file, (mtime, mtime))
 
@@ -256,15 +258,17 @@ class Store:
             file.unlink()
 
         parent = file.parent
-        while parent != self.store_dir and parent.exists():
+        while parent != self.store_dir:
             try:
                 parent.rmdir()
-                parent = parent.parent
             except OSError:
                 break
+            parent = parent.parent
 
 
 class APIObject:
+    __slots__ = ("__weakref__",)
+
     _client: Client  # pyright: ignore[reportUninitializedInstanceVariable]
     _store: Store  # pyright: ignore[reportUninitializedInstanceVariable]
     _data: Json  # pyright: ignore[reportUninitializedInstanceVariable]
@@ -300,7 +304,8 @@ class APIObject:
         store_path: Path | None = None,
     ) -> T_APIObject | None:
         obj = cls(*args)
-        if data := obj.store.load(store_path or obj.store_path()):
+        data = obj.store.load(store_path or obj.store_path())
+        if data is not None:
             return obj.set_data(data)
         else:
             return None
@@ -327,6 +332,8 @@ class APIObject:
 
 
 class Immutable(APIObject):
+    __slots__ = ()
+
     def __hash__(self) -> int:
         return hash(
             json.dumps(
@@ -347,6 +354,8 @@ class Immutable(APIObject):
 
 
 class Nameable(APIObject):
+    __slots__ = ()
+
     _data: JsonD
 
     FILENAME_XLAT: ClassVar[dict[int, int]] = {
@@ -374,6 +383,8 @@ class Nameable(APIObject):
 
 
 class Timestamped(APIObject):
+    __slots__ = ()
+
     _data: JsonD
 
     @property
@@ -404,6 +415,8 @@ T_Loadable = TypeVar("T_Loadable", bound="Loadable")
 
 
 class Loadable(APIObject):
+    __slots__ = ()
+
     @classmethod
     def load(cls: type[T_Loadable], client: Client, store: Store) -> T_Loadable | None:
         return cls._load(client, store)
