@@ -163,7 +163,9 @@ class Store:
                 if chats := org.chat_list():
                     for entry in chats.cached_entries():
                         if chat := entry.load_chat():
-                            self.save(chat.store_path(), chat.get_data(), chat.get_mtime())
+                            self.save(
+                                chat.store_path(), chat.get_data(), chat.get_mtime()
+                            )
 
     MIGRATIONS: ClassVar[
         defaultdict[str | None, tuple[str, Callable[["Store"], None]]]
@@ -171,7 +173,7 @@ class Store:
         # migrate from unknown versions by not migrating anything/starting over
         lambda: (__version__, Store._wipe),
         {
-            "0.1.7": ("0.1.8", lambda _: None),  # if format unchanged, migrate whole store
+            "0.1.7": ("0.1.8", lambda _: None),
             "0.1.8": ("0.1.9", _set_chat_mtimes),
         },
     )
@@ -210,7 +212,11 @@ class Store:
         ) as f:
             try:
                 json.dump(
-                    data, f, ensure_ascii=False, check_circular=False, separators=(",", ":")
+                    data,
+                    f,
+                    ensure_ascii=False,
+                    check_circular=False,
+                    separators=(",", ":"),
                 )
                 f.flush()
                 Path(f.name).rename(cache_file)
@@ -460,6 +466,21 @@ class ChatsEntry(Timestamped, Nameable, Immutable):
     async def fetch_chat(self) -> Chat:
         return await Chat._fetch(self.chat_list, api_path=self.chat_api_path())
 
+    def print(self) -> None:
+        name = self.name or ""
+
+        if sys.stdout.isatty():
+            try:
+                width = os.get_terminal_size().columns
+            except OSError:
+                width = 80
+
+            max_len = width - 36 - 4
+            if len(name) > max_len:
+                name = name[: max_len - 1] + "…"
+
+        print(f"{self.uuid}\t{name}")
+
 
 @final
 class Chats(APIObject):
@@ -490,7 +511,9 @@ class Chats(APIObject):
 
     def set_data(self, data: Json) -> "Chats":
         # convert list (reverse chronological from API) to dict (forward chronological)
-        entries = (ChatsEntry(self).set_data(raw) for raw in reversed(cast(list[JsonD], data)))
+        entries = (
+            ChatsEntry(self).set_data(raw) for raw in reversed(cast(list[JsonD], data))
+        )
         self._data = {entry.uuid: entry for entry in entries}
         return self
 
@@ -506,24 +529,25 @@ class Chats(APIObject):
         yield from reversed(self._data.values())
 
     async def new_entries(
-        self, page_size: int = 20, save: bool = True
+        self, page_size: int = 20
     ) -> AsyncGenerator[ChatsEntry, None]:
-        # if no data/first fetch, fetch all entries---they're all new
-        if not self._data:
-            self.set_data(await self.client.refresh(self.api_path()))
-
-            for entry in self.cached_entries():
-                yield entry
-
-            if save:
-                self.save()
-            return
-
         # "sliding window" sync (chat_conversations is recently-modified-first)
         new: dict[str, ChatsEntry] = {}
 
-        offset = 0
-        limit = self.unseen + 1 if self.unseen else page_size
+        if not self._data:
+            # first fetch: grab everything in one unpaginated request (yes, the
+            # api really does work that way, insanity), then check for mid-sync
+            # changes by fetching the most recent chat, comparing with the sync
+            self.set_data(await self.client.refresh(self.api_path()))
+            for entry in self.cached_entries():
+                yield entry
+            self.save()
+            offset = 0
+            limit = 1
+        else:
+            offset = 0
+            limit = self.unseen + 1 if self.unseen else page_size
+
         self.unseen = 0
 
         assert limit
@@ -571,7 +595,9 @@ class Chats(APIObject):
                     # get us, we need to yield B' even if we wouldn't yield B.
                     if entry.updated_at == new_entry.updated_at:
                         continue
-                elif (stored := self._data.get(uuid)) and entry.updated_at == stored.updated_at:
+                elif (
+                    stored := self._data.get(uuid)
+                ) and entry.updated_at == stored.updated_at:
                     # entry was in a chronological list of ones we already had,
                     # so we must also have all entries before it, so we're done
                     done = True
@@ -597,11 +623,22 @@ class Chats(APIObject):
         # from necessarily reverse-chronological new in reverse so self._data's
         # still entirely in chronological order. this may be a bit galaxy brain
         self._data.update(reversed(new.items()))
-        if save:
-            self.save()
+        self.save()
+
+    async def entries(self) -> AsyncGenerator[ChatsEntry, None]:
+        seen: set[ChatsEntry] = set()
+        while True:
+            async for entry in self.new_entries():
+                seen.add(entry)
+                yield entry
+            if not self.unseen:
+                break
+        for entry in self.cached_entries():
+            if entry not in seen:
+                yield entry
 
     async def refresh(self) -> "Chats":
-        async for _ in self.new_entries():
+        async for _ in self.entries():
             pass
 
         return self
@@ -702,12 +739,6 @@ class Account(Nameable, Loadable):
         return None
 
 
-def truncate(s: str, max_len: int) -> str:
-    if len(s) > max_len:
-        return s[: max_len - 1] + "…"
-    return s
-
-
 async def aroundrobin(*iterators: AsyncGenerator[T, None]) -> AsyncGenerator[T, None]:
     try:
         done = False
@@ -729,7 +760,6 @@ class Syncer:
     store: Store
     connections: int = 6
     success_delay: float = 0.25
-    tty: bool = field(default_factory=sys.stdout.isatty)
 
     async def _as_completed(
         self, awaitables: AsyncIterator[Awaitable[T]]
@@ -784,15 +814,6 @@ class Syncer:
         else:
             return self._as_completed(asyncify(awaitables))
 
-    async def gather(self, *awaitables: Awaitable[T]) -> list[T]:
-        tasks_list = [asyncio.ensure_future(a) for a in awaitables]
-
-        async with aclosing(self.as_completed(tasks_list)) as gen:
-            async for task in gen:
-                await task
-
-        return [task.result() for task in tasks_list]
-
     async def get_organizations(self) -> AsyncGenerator[Organization]:
         old_account = Account.load(self.client, self.store)
         account = await Account.fetch(self.client, self.store)
@@ -824,90 +845,36 @@ class Syncer:
             print(f"Fetching chats for organization {organization}", file=sys.stderr)
             yield organization
 
-    def print_entry(self, entry: ChatsEntry) -> None:
-        name = entry.name or ""
-        if self.tty:
-            try:
-                width = os.get_terminal_size().columns
-            except OSError:
-                width = 80
-            name = truncate(name, width - 36 - 4)
-        print(f"{entry.uuid}\t{name}")
-
-    @staticmethod
-    def fetch_new_chat(entry: ChatsEntry) -> Task[Chat]:
-        # we must get old_entry *now* and not in the async function below since
-        # Chats.new_entries might finish and save the new entry over old_entry!
-        old_entry = entry.chat_list.entry(entry.uuid)
-        old_chat = old_entry.load_chat() if old_entry else None
-
-        async def _fetch_new_chat() -> Chat:
-            chat = await entry.fetch_chat()
-
-            if old_chat and old_chat.store_path() != chat.store_path():
-                old_chat.delete_cached()
-
-            return chat
-
-        return asyncio.create_task(_fetch_new_chat())
-
     async def new_chat_fetches(self) -> AsyncGenerator[Task[Chat], None]:
-        needs_refresh: list[tuple[Chats, list[Task[Chat]], Task[None]]] = [
-            (organization.chat_list(), [], asyncio.create_task(asyncio.sleep(0)))
-            async for organization in self.get_organizations()
+        def fetch_new_chat(entry: ChatsEntry, old_chat: Chat | None) -> Task[Chat]:
+            async def _fetch_new_chat() -> Chat:
+                chat = await entry.fetch_chat()
+
+                if old_chat and old_chat.store_path() != chat.store_path():
+                    old_chat.delete_cached()
+
+                return chat
+
+            return asyncio.create_task(_fetch_new_chat())
+
+        chats_lists: list[Chats] = [
+            organization.chat_list() async for organization in self.get_organizations()
         ]
 
-        try:
-            while needs_refresh:
-                async with aclosing(
-                    aroundrobin(
-                        *(
-                            (
-                                (entry, fetches)
-                                async for entry in chats.new_entries(save=False)
-                            )
-                            for chats, fetches, _ in needs_refresh
-                        )
-                    )
-                ) as items:
-                    async for entry, fetches in items:
-                        fetch = self.fetch_new_chat(entry)
-                        fetches.append(fetch)
-                        self.print_entry(entry)
-                        yield fetch
+        async with aclosing(
+            aroundrobin(*(chats.entries() for chats in chats_lists))
+        ) as items:
+            async for entry in items:
+                # we must get old_entry *now* and not in the async function in
+                # fetch_new_chat, since Chats.new_entries might finish and save
+                # the new entry over old_entry!
+                old_entry = entry.chat_list.entry(entry.uuid)
+                old_chat = old_entry.load_chat() if old_entry else None
+                if old_chat and old_chat.updated_at == entry.updated_at:
+                    continue
 
-                for _, _, old_save in needs_refresh:
-                    if old_save:
-                        old_save.cancel()
-
-                async def save_after_fetches(
-                    chats: Chats, fetches: list[Task[Chat]]
-                ) -> None:
-                    for fetch in fetches:
-                        await fetch
-
-                    chats.save()
-
-                needs_refresh = [
-                    (
-                        chats,
-                        [],
-                        asyncio.create_task(save_after_fetches(chats, fetches)),
-                    )
-                    for chats, fetches, _ in needs_refresh
-                    if chats.unseen
-                ]
-
-            for _, _, save in needs_refresh:
-                await save
-        except BaseException:
-            for _, _, save in needs_refresh:
-                save.cancel()
-
-                with suppress(BaseException):
-                    await save
-
-            raise
+                entry.print()
+                yield fetch_new_chat(entry, old_chat)
 
     async def sync_all(self) -> None:
         async with aclosing(self.as_completed(self.new_chat_fetches())) as tasks:
