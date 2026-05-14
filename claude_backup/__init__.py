@@ -203,7 +203,7 @@ class Store:
     def save(
         self, path: Path, data: Json, mtime: datetime | float | None = None
     ) -> None:
-        cache_file = self.store_dir / path.with_suffix(".json")
+        cache_file = self.store_dir / path.with_name(path.name + ".json")
         cache_file.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
 
         with NamedTemporaryFile(
@@ -234,12 +234,12 @@ class Store:
         if self.ignore_cache:
             return None
 
-        cache_file = self.store_dir / path.with_suffix(".json")
+        cache_file = self.store_dir / path.with_name(path.name + ".json")
         with suppress(FileNotFoundError, NotADirectoryError), cache_file.open() as f:
             return cast(Json, json.load(f))
 
     def delete(self, path: Path) -> None:
-        file = self.store_dir / path.with_suffix(".json")
+        file = self.store_dir / path.with_name(path.name + ".json")
         with suppress(FileNotFoundError):
             file.unlink()
 
