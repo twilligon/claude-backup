@@ -417,7 +417,7 @@ class Chat(Timestamped, Nameable):
 
 
 @final
-class ChatsEntry(Nameable, Immutable):
+class ChatsEntry(Timestamped, Nameable, Immutable):
     __slots__ = (
         "chat_list",
         "_data",
@@ -461,7 +461,7 @@ class Chats(APIObject):
     __slots__ = ("organization", "unseen", "_data")
 
     organization: "Organization"
-    _data: dict[str, JsonD]
+    _data: dict[str, ChatsEntry]
     unseen: int
 
     def __init__(self, organization: "Organization"):
@@ -485,10 +485,8 @@ class Chats(APIObject):
 
     def set_data(self, data: Json) -> "Chats":
         # convert list (reverse chronological from API) to dict (forward chronological)
-        self._data = {
-            cast(str, entry["uuid"]): entry
-            for entry in reversed(cast(list[JsonD], data))
-        }
+        entries = (ChatsEntry(self).set_data(raw) for raw in reversed(cast(list[JsonD], data)))
+        self._data = {entry.uuid: entry for entry in entries}
         return self
 
     @classmethod
@@ -505,18 +503,14 @@ class Chats(APIObject):
 
     def get_data(self) -> Json:
         # convert dict (forward chronological) back to list (reverse chronological)
-        return list(reversed(self._data.values()))
+        return [entry._data for entry in reversed(self._data.values())]
 
     def entry(self, uuid: str) -> ChatsEntry | None:
-        if entry := self._data.get(uuid):
-            return ChatsEntry(self).set_data(entry)
-        else:
-            return None
+        return self._data.get(uuid)
 
     def cached_entries(self) -> Iterator[ChatsEntry]:
         # yield in reverse chronological order (newest first)
-        for entry in reversed(self._data.values()):
-            yield ChatsEntry(self).set_data(entry)
+        yield from reversed(self._data.values())
 
     async def new_entries(
         self, page_size: int = 20, save: bool = True
@@ -533,7 +527,7 @@ class Chats(APIObject):
             return
 
         # "sliding window" sync (chat_conversations is recently-modified-first)
-        new: dict[str, JsonD] = {}
+        new: dict[str, ChatsEntry] = {}
 
         offset = 0
         limit = self.unseen + 1 if self.unseen else page_size
@@ -550,8 +544,9 @@ class Chats(APIObject):
             )
 
             done = False
-            for entry in page:
-                uuid = cast(str, entry["uuid"])
+            for raw in page:
+                entry = ChatsEntry(self).set_data(raw)
+                uuid = entry.uuid
 
                 if new_entry := new.get(uuid):
                     # this api doesn't have cursors or snapshots or anything :(
@@ -581,16 +576,16 @@ class Chats(APIObject):
                     #
                     # so in case the cartesian daemon of claude chats is out to
                     # get us, we need to yield B' even if we wouldn't yield B.
-                    if entry == new_entry:
+                    if entry.updated_at == new_entry.updated_at:
                         continue
-                elif entry == self._data.get(uuid):
+                elif (stored := self._data.get(uuid)) and entry.updated_at == stored.updated_at:
                     # entry was in a chronological list of ones we already had,
                     # so we must also have all entries before it, so we're done
                     done = True
                     break
 
                 new[uuid] = entry
-                yield ChatsEntry(self).set_data(entry)
+                yield entry
 
             # we *ought* to break from this loop by seeing something from prior
             # refreshes, but just in case e.g. all seen entries were deleted on
