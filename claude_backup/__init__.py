@@ -366,14 +366,20 @@ class Timestamped(APIObject):
     @property
     def created_at(self) -> datetime | None:
         try:
-            return datetime.fromisoformat(cast(str, self._data["created_at"]))
+            # the .replace("Z", ...) is for Python <3.11, which doesn't accept
+            # the trailing-Z form fromisoformat() that claude.ai uses
+            return datetime.fromisoformat(
+                cast(str, self._data["created_at"]).replace("Z", "+00:00")
+            )
         except (KeyError, TypeError, ValueError):
             return None
 
     @property
     def updated_at(self) -> datetime | None:
         try:
-            return datetime.fromisoformat(cast(str, self._data["updated_at"]))
+            return datetime.fromisoformat(
+                cast(str, self._data["updated_at"]).replace("Z", "+00:00")
+            )
         except (KeyError, TypeError, ValueError):
             return None
 
