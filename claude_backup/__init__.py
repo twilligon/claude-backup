@@ -206,12 +206,17 @@ class Store:
             "w",
             prefix=f"{cache_file.name}-",
             dir=cache_file.parent,
+            delete=False,
         ) as f:
-            json.dump(
-                data, f, ensure_ascii=False, check_circular=False, separators=(",", ":")
-            )
-            f.flush()
-            Path(f.name).rename(cache_file)
+            try:
+                json.dump(
+                    data, f, ensure_ascii=False, check_circular=False, separators=(",", ":")
+                )
+                f.flush()
+                Path(f.name).rename(cache_file)
+            except BaseException:
+                Path(f.name).unlink(missing_ok=True)
+                raise
 
         if mtime:
             mtime = mtime.timestamp() if isinstance(mtime, datetime) else mtime
