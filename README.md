@@ -10,6 +10,8 @@ Unofficial, unsanctioned tool to backup [Claude.ai](https://claude.ai) chats to 
 
 We use an incremental sync algorithm to fetch only chats created or updated since the last backup. The fetch is done in parallel, with a typical user agent and polite rate and connection limits such that it's less traffic than manually scrolling through your chats and opening each in a new browser tab. I of course can't guarantee Big Claude won't be after you if you run this unofficial tool, but empirically they don't seem to mind.
 
+To convert the saved JSON to Markdown (e.g. for feeding chats back to a model), see the companion tool [`claude2md`](https://github.com/twilligon/claude2md).
+
 Chats are stored as their original API JSON with nice `find`able names and `grep`able contents:
 
     $ CLAUDE_SESSION_KEY="$(wl-paste)" uvx claude-backup
