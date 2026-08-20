@@ -220,13 +220,15 @@ class Store:
         cache_file = self.store_dir / path.with_name(path.name + ".json")
         cache_file.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
 
-        with NamedTemporaryFile(
-            "w",
-            prefix=f"{cache_file.name}-",
-            dir=cache_file.parent,
-            delete=False,
-        ) as f:
-            try:
+        tmp_path: str | None = None
+        try:
+            with NamedTemporaryFile(
+                "w",
+                prefix=f"{cache_file.name}-",
+                dir=cache_file.parent,
+                delete=False,
+            ) as f:
+                tmp_path = f.name
                 json.dump(
                     data,
                     f,
@@ -235,10 +237,12 @@ class Store:
                     separators=(",", ":"),
                 )
                 f.flush()
-                Path(f.name).rename(cache_file)
-            except BaseException:
-                Path(f.name).unlink(missing_ok=True)
-                raise
+            os.replace(tmp_path, cache_file)
+            tmp_path = None
+        except BaseException:
+            if tmp_path is not None:
+                Path(tmp_path).unlink(missing_ok=True)
+            raise
 
         if mtime is not None:
             mtime = mtime.timestamp() if isinstance(mtime, datetime) else mtime
