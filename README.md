@@ -14,7 +14,7 @@ To convert the saved JSON to Markdown (e.g. for feeding chats back to a model), 
 
 Chats are stored as their original API JSON with nice `find`able names and `grep`able contents:
 
-    $ CLAUDE_SESSION_KEY="$(wl-paste)" uvx claude-backup
+    $ wl-paste | uvx claude-backup
     Skipping organization twilligon (c8eaca6b-eddb-4bbc-9fe3-637a0574565f) without "chat" capability
     Fetching chats for organization claude@twilligon.com's Organization (9e9a56fc-6d1c-4d62-a96d-0cff3a473cf0)
     30ceebd6-afcc-4796-bb77-631069cd0696    Cadre versus posse comparison
@@ -30,7 +30,7 @@ Chats are stored as their original API JSON with nice `find`able names and `grep
     0b7f4ae8-ef57-4cac-8d47-7e4c5b0e5564    Exercise timing and sleep quality
     6e5385c4-6ad4-4d46-ac20-dda2105a3bea    Scented neural networks with odor emissions
     $ # ...and so on... time passes... then later:
-    $ CLAUDE_SESSION_KEY="$(wl-paste)" uvx claude-backup
+    $ wl-paste | uvx claude-backup
     Skipping organization twilligon (c8eaca6b-eddb-4bbc-9fe3-637a0574565f) without "chat" capability
     Fetching chats for organization claude@twilligon.com's Organization (9e9a56fc-6d1c-4d62-a96d-0cff3a473cf0)
     4ddbcc12-5cd8-4611-813a-befdedeb4b16    Smithsonian funding and government ownership
@@ -69,11 +69,11 @@ For reliable and comprehensive backups even through minor API changes, we save r
 
 As a backup tool, we **retain deleted chats** (and old branches of extant chats) by default. To delete local copies, manually delete the corresponding `.json` and any attached files from `backup_dir` or start from scratch by deleting `backup_dir` or running `claude-backup --ignore-cache`.
 
-By default, `claude-backup` attempts to authenticate to `claude.ai` by extracting a session cookie from your browser. If this doesn't work (and frankly if this does work you should be sandboxing things better!) you must manually do the same. For Chrome et al., to https://claude.ai in your browser, open **Developer tools** with F12 or Ctrl+Shift+I, navigate to the **Application** tab (it may be hidden under **⋮** > **More tools** > **Application**), and copy the value of the `sessionKey` cookie. (Firefox should be [similar](https://firefox-source-docs.mozilla.org/devtools-user/storage_inspector/index.html).) Then set the `CLAUDE_SESSION_KEY` environment variable to this cookie when running `claude-backup`:
+For Chrome et al., to https://claude.ai in your browser, open **Developer tools** with F12 or Ctrl+Shift+I, navigate to the **Application** tab (it may be hidden under **⋮** > **More tools** > **Application**), and copy the value of the `sessionKey` cookie. (Firefox should be [similar](https://firefox-source-docs.mozilla.org/devtools-user/storage_inspector/index.html).)
 
-    $ CLAUDE_SESSION_KEY="sk-ant-sid01-..." claude-backup
+    $ wl-paste | claude-backup
 
-As this tool demonstrates **anyone with this cookie is authenticated as you on `claude.ai`** so be careful and never give this to anyone or anything you do not trust! It might even be worth keeping out of `history` by loading it straight from your clipboard with e.g. `CLAUDE_SESSION_KEY="$(wl-paste)"`, though the exact command varies by platform. I'm sure Claude knows which you should use ;)
+As this tool demonstrates **anyone with this cookie is authenticated as you on `claude.ai`** so be careful and never give this to anyone or anything you do not trust!
 
 As of recently(?) `claude.ai` is behind Cloudflare, and `claude-backup` can be unreliable behind a VPN. I swore to myself I was off the scrape-things-that-don't-want-to-be-scraped grind, so I recommend running `claude-backup` from a non-sus IP, bumping `--success-delay`, and lowering `--connections`. Any further workarounds are left as an exercise to the reader...
 

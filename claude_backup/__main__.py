@@ -3,16 +3,14 @@
 # pyright: reportPrivateUsage=false, reportIncompatibleVariableOverride=false
 
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
-from collections.abc import Sequence
+from collections.abc import Iterable, Iterator, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 import asyncio
-import os
 import sys
 from platformdirs import user_data_dir
-import browser_cookie3  # pyright: ignore[reportMissingTypeStubs]
 
 from . import __version__
 from .client import Client
@@ -22,7 +20,6 @@ from .sync import Syncer
 __all__ = (
     "main",
     "run",
-    "get_session_key",
 )
 
 
@@ -37,20 +34,7 @@ class DefaultPath:
             return self.path
 
 
-def get_session_key() -> str:
-    try:
-        for cookie in browser_cookie3.load(domain_name=".claude.ai"):
-            if cookie.name == "sessionKey" and cookie.value:
-                return cookie.value
-        raise RuntimeError("sessionKey cookie not found in browser")
-    except Exception as e:
-        raise RuntimeError(
-            "Failed to load browser cookies. "
-            + "Set CLAUDE_SESSION_KEY to your claude.ai sessionKey cookie."
-        ) from e
-
-
-async def _run(argv: Sequence[str]) -> None:
+async def _run(argv: Sequence[str], keys: Iterable[str]) -> None:
     def default(cls: type[Any], key: str) -> Any:
         return cls.__dataclass_fields__[key].default
 
@@ -119,29 +103,34 @@ async def _run(argv: Sequence[str]) -> None:
 
     store = Store(store_dir=Path(args.backup_dir), ignore_cache=args.ignore_cache)
 
-    session_key = os.environ.get("CLAUDE_SESSION_KEY") or get_session_key()
-    async with Client(
-        session_key=session_key,
-        retries=args.retries,
-        min_retry_delay=args.min_retry_delay,
-        max_retry_delay=args.max_retry_delay,
-    ) as client:
-        syncer = Syncer(
-            client=client,
-            store=store,
-            connections=args.connections,
-            success_delay=args.success_delay,
-        )
-        await syncer.sync_all()
+    for key in keys:
+        async with Client(
+            session_key=key,
+            retries=args.retries,
+            min_retry_delay=args.min_retry_delay,
+            max_retry_delay=args.max_retry_delay,
+        ) as client:
+            await Syncer(
+                client=client,
+                store=store,
+                connections=args.connections,
+                success_delay=args.success_delay,
+            ).sync_all()
 
 
-def run(argv: Sequence[str]) -> None:
+def run(argv: Sequence[str], keys: Iterable[str]) -> None:
     with suppress(KeyboardInterrupt):
-        asyncio.run(_run(argv))
+        asyncio.run(_run(argv, keys))
 
 
 def main() -> None:
-    run(sys.argv[1:])
+    def keys() -> Iterator[str]:
+        for key in filter(None, map(str.strip, sys.stdin)):
+            if not key.startswith("sk-"):
+                sys.exit(f"not a sessionKey: {key}")
+            yield key
+
+    run(sys.argv[1:], keys())
 
 
 if __name__ == "__main__":
