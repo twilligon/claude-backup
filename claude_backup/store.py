@@ -93,7 +93,6 @@ class Store:
     )
 
     store_dir: Path
-    ignore_cache: bool = False
 
     def __post_init__(self):
         if not self.store_dir.exists():
@@ -148,16 +147,10 @@ class Store:
             os.utime(cache_file, (mtime, mtime))
 
     def find(self, path: Path) -> Path | None:
-        if self.ignore_cache:
-            return None
-
         cache_file = self.store_dir / path
         return cache_file if cache_file.is_file() else None
 
     def load(self, path: Path) -> Json | None:
-        if self.ignore_cache:
-            return None
-
         cache_file = self.store_dir / path.with_name(path.name + ".json")
         with suppress(FileNotFoundError, NotADirectoryError), cache_file.open() as f:
             return cast(Json, json.load(f))

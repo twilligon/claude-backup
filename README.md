@@ -67,7 +67,7 @@ This read-only tool is the product of reverse-engineering Claude.ai's internal A
 
 For reliable and comprehensive backups even through minor API changes, we save raw JSON responses from the API instead of normalizing them to some fixed schema. This should be a bit more resilient than forcing everything into some internal data model that could diverge from that of Claude.ai, but it means we don't necessarily download all resources referenced by API objects other than what's necessary to list and fetch chat content. In practice, this preserves all regular chat content, but not necessarily container uploads, "advanced research" reports, etc.
 
-As a backup tool, we **retain deleted chats** (and old branches of extant chats) by default. To delete local copies, manually delete the corresponding `.json` and any attached files from `backup_dir` or start from scratch by deleting `backup_dir` or running `claude-backup --ignore-cache`.
+As a backup tool, we **retain deleted chats** (and old branches of extant chats) by default. To delete local copies, manually delete the corresponding `.json` and any attached files from `backup_dir` or start from scratch by deleting `backup_dir`.
 
 For Chrome et al., to https://claude.ai in your browser, open **Developer tools** with F12 or Ctrl+Shift+I, navigate to the **Application** tab (it may be hidden under **⋮** > **More tools** > **Application**), and copy the value of the `sessionKey` cookie. (Firefox should be [similar](https://firefox-source-docs.mozilla.org/devtools-user/storage_inspector/index.html).)
 
@@ -101,7 +101,6 @@ The bleeding-edge way:
     $ claude-backup --help
     usage: claude-backup [-h] [-v] [-c CONNECTIONS] [-d DELAY] [-r RETRIES]
                          [--min-retry-delay DELAY] [--max-retry-delay DELAY]
-                         [--ignore-cache]
                          [backup_dir]
 
     Backup Claude.ai chats
@@ -124,8 +123,6 @@ The bleeding-edge way:
                             Minimum retry delay in seconds (default: 1.0)
       --max-retry-delay DELAY
                             Maximum retry delay in seconds (default: 60.0)
-      --ignore-cache        Ignore local cache and re-fetch everything from API
-                            (default: False)
 
 ## License
 

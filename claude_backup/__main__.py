@@ -91,17 +91,11 @@ async def _run(argv: Sequence[str], keys: Iterable[str]) -> None:
         default=default(Client, "max_retry_delay"),
         help="Maximum retry delay in seconds",
     )
-    parser.add_argument(
-        "--ignore-cache",
-        action="store_true",
-        help="Ignore local cache and re-fetch everything from API",
-    )
-
     args = parser.parse_args(argv)
     if isinstance(args.backup_dir, DefaultPath):
         args.backup_dir = args.backup_dir.path
 
-    store = Store(store_dir=Path(args.backup_dir), ignore_cache=args.ignore_cache)
+    store = Store(store_dir=Path(args.backup_dir))
 
     for key in keys:
         async with Client(
