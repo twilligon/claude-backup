@@ -1,4 +1,4 @@
-from claude_backup import main
+from claude_backup.cli import main
 
 if __name__ == "__main__":
     main()
