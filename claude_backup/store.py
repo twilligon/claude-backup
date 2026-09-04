@@ -170,8 +170,9 @@ class Store:
 
 
 class APIObject:
-    __slots__ = ("__weakref__",)
+    __slots__: tuple[str, ...] = ("__weakref__", "_data")
 
+    __weakref__: Any  # pyright: ignore[reportUninitializedInstanceVariable]
     _client: Client  # pyright: ignore[reportUninitializedInstanceVariable]
     _store: Store  # pyright: ignore[reportUninitializedInstanceVariable]
     _data: Json  # pyright: ignore[reportUninitializedInstanceVariable]
@@ -240,7 +241,7 @@ class APIObject:
 
 
 class Immutable(APIObject):
-    __slots__ = ()
+    __slots__: tuple[str, ...] = ()
 
     def __hash__(self) -> int:
         return hash(json.dumps(self._data, sort_keys=True, **JSON_ARGS))
@@ -254,7 +255,7 @@ class Immutable(APIObject):
 
 
 class Nameable(APIObject):
-    __slots__ = ()
+    __slots__: tuple[str, ...] = ()
 
     _data: JsonD
 
@@ -283,7 +284,7 @@ class Nameable(APIObject):
 
 
 class Timestamped(APIObject):
-    __slots__ = ()
+    __slots__: tuple[str, ...] = ()
 
     _data: JsonD
 
@@ -313,10 +314,7 @@ class Timestamped(APIObject):
 
 @final
 class Chat(Timestamped, Nameable):
-    __slots__ = (
-        "chat_list",
-        "_data",
-    )
+    __slots__ = ("chat_list",)
 
     chat_list: "Chats"
     _data: JsonD
@@ -356,10 +354,7 @@ class Chat(Timestamped, Nameable):
 
 @final
 class File(Timestamped, Nameable):
-    __slots__ = (
-        "chat",
-        "_data",
-    )
+    __slots__ = ("chat",)
 
     chat: Chat
     _data: JsonD
@@ -396,10 +391,7 @@ class File(Timestamped, Nameable):
 
 @final
 class Asset(APIObject):
-    __slots__ = (
-        "file",
-        "_data",
-    )
+    __slots__ = ("file",)
 
     file: File
     _data: JsonD
@@ -442,10 +434,7 @@ class Asset(APIObject):
 
 @final
 class ChatsEntry(Timestamped, Nameable, Immutable):
-    __slots__ = (
-        "chat_list",
-        "_data",
-    )
+    __slots__ = ("chat_list",)
 
     chat_list: "Chats"
     _data: JsonD
@@ -497,7 +486,7 @@ class ChatsEntry(Timestamped, Nameable, Immutable):
 
 @final
 class Chats(APIObject):
-    __slots__ = ("organization", "unseen", "_data")
+    __slots__ = ("organization", "unseen")
 
     organization: "Organization"
     _data: dict[str, ChatsEntry]
@@ -662,10 +651,7 @@ class Chats(APIObject):
 
 @final
 class Organization(Nameable):
-    __slots__ = (
-        "account",
-        "_data",
-    )
+    __slots__ = ("account",)
 
     account: "Account"
     _data: JsonD
@@ -697,10 +683,7 @@ class Organization(Nameable):
 
 @final
 class Membership(Immutable):
-    __slots__ = (
-        "account",
-        "_data",
-    )
+    __slots__ = ("account",)
 
     account: "Account"
     _data: JsonD
@@ -724,11 +707,7 @@ class Membership(Immutable):
 
 @final
 class Account(Nameable):
-    __slots__ = (
-        "_client",
-        "_store",
-        "_data",
-    )
+    __slots__ = ("_client", "_store")
 
     _client: Client
     _store: Store
