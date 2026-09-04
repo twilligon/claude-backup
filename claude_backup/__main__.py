@@ -40,7 +40,7 @@ async def _run(argv: Sequence[str], keys: Iterable[str]) -> None:
 
     parser = ArgumentParser(
         prog="claude-backup",
-        description="Backup Claude.ai chats",
+        description="Back up Claude.ai chats",
         formatter_class=ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(

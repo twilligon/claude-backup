@@ -1,6 +1,6 @@
 # `claude-backup`
 
-Unofficial, unsanctioned tool to backup [Claude.ai](https://claude.ai) chats to local files.
+Unofficial, unsanctioned tool to back up [Claude.ai](https://claude.ai) chats to local files.
 
     uvx claude-backup
 
@@ -63,19 +63,19 @@ Chats are stored as their original API JSON with nice `find`able names and `grep
 
 ## Limitations
 
-This read-only tool is the product of reverse-engineering Claude.ai's internal API (for Good, not Evil---please don't ban me Anthropic 🙏) so I can't make any guarantees `claude-backup` will continue to work. That said, we make very few assumptions about the API schema, and everything works as of 2025-10-31. I'll likely update this best-effort when things break. Barring that, PRs welcome ;)
+This read-only tool is the product of reverse-engineering Claude.ai's internal API (for Good, not Evil---please don't ban me Anthropic 🙏) so I can't make any guarantees `claude-backup` will continue to work. That said, we make few assumptions about the API schema, and everything works as of 2026-09-04. I'll likely update this best-effort when things break. Barring that, PRs welcome ;)
 
 For reliable and comprehensive backups even through minor API changes, we save raw JSON responses from the API instead of normalizing them to some fixed schema. This should be a bit more resilient than forcing everything into some internal data model that could diverge from that of Claude.ai, but it means we don't necessarily download all resources referenced by API objects other than what's necessary to list and fetch chat content. In practice, this preserves all regular chat content, but not necessarily container uploads, "advanced research" reports, etc.
 
 As a backup tool, we **retain deleted chats** (and old branches of extant chats) by default. To delete local copies, manually delete the corresponding `.json` and any attached files from `backup_dir` or start from scratch by deleting `backup_dir`.
 
-For Chrome et al., to https://claude.ai in your browser, open **Developer tools** with F12 or Ctrl+Shift+I, navigate to the **Application** tab (it may be hidden under **⋮** > **More tools** > **Application**), and copy the value of the `sessionKey` cookie. (Firefox should be [similar](https://firefox-source-docs.mozilla.org/devtools-user/storage_inspector/index.html).)
+For Chrome et al., go to https://claude.ai in your browser, open **Developer tools** with F12 or Ctrl+Shift+I, navigate to the **Application** tab (it may be hidden under **⋮** > **More tools** > **Application**), and copy the value of the `sessionKey` cookie. (Firefox should be [similar](https://firefox-source-docs.mozilla.org/devtools-user/storage_inspector/index.html).)
 
     $ wl-paste | claude-backup
 
-As this tool demonstrates **anyone with this cookie is authenticated as you on `claude.ai`** so be careful and never give this to anyone or anything you do not trust!
+Your platform's equivalent of `wl-paste` might vary; I'm sure Claude knows what you should use ;) As this tool demonstrates **anyone with this cookie is authenticated as you on `claude.ai`** so be careful and never give this to anyone or anything you do not trust!
 
-As of recently(?) `claude.ai` is behind Cloudflare, and `claude-backup` can be unreliable behind a VPN. I swore to myself I was off the scrape-things-that-don't-want-to-be-scraped grind, so I recommend running `claude-backup` from a non-sus IP, bumping `--success-delay`, and lowering `--connections`. Any further workarounds are left as an exercise to the reader...
+`claude.ai` is behind Cloudflare, and `claude-backup` can be unreliable behind a VPN. I swore to myself I was off the scrape-things-that-don't-want-to-be-scraped grind, so I recommend running `claude-backup` from a non-sus IP, bumping `--success-delay`, and lowering `--connections`. Any further workarounds are left as an exercise for the reader...
 
 ## Install
 
@@ -103,7 +103,7 @@ The bleeding-edge way:
                          [--min-retry-delay DELAY] [--max-retry-delay DELAY]
                          [backup_dir]
 
-    Backup Claude.ai chats
+    Back up Claude.ai chats
 
     positional arguments:
       backup_dir            Directory to save backups (default:
