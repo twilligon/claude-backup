@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from types import TracebackType
 from typing import TypeAlias, cast
 import asyncio
+import json
 import sys
 from fake_useragent import UserAgent
 from aiohttp import (
@@ -64,7 +65,7 @@ class Client:
     ) -> bool | None:
         return await self.session.__aexit__(exc_type, exc_val, exc_tb)
 
-    async def _refresh(self, path: str) -> Json:
+    async def _download(self, path: str) -> bytes:
         # i have never seen a 429 or in fact a 4xx error of any kind from this
         # api, nor ratelimit headers or fields on the returned stuff (i've seen
         # 403 Forbidden from cloudflare, in front of claude.ai, but only behind
@@ -78,7 +79,7 @@ class Client:
             # explicitly check r.status instead of using r.raise_for_status
             # because we want to raise for r.status >= 300 not just >= 400
             if 200 <= r.status < 300:
-                return cast(Json, await r.json())
+                return await r.read()
 
             raise ClientResponseError(
                 r.request_info,
@@ -88,11 +89,11 @@ class Client:
                 headers=r.headers,
             )
 
-    async def refresh(self, path: str) -> Json:
+    async def download(self, path: str) -> bytes:
         retry_delay = self.min_retry_delay
         for retry in range(self.retries - 1):
             try:
-                return await self._refresh(path)
+                return await self._download(path)
             except Exception as e:
                 print(
                     f"Error fetching {path} (try {retry+1} of {self.retries}, "
@@ -102,4 +103,7 @@ class Client:
                 await asyncio.sleep(retry_delay)
                 retry_delay = min(retry_delay * 2, self.max_retry_delay)
 
-        return await self._refresh(path)
+        return await self._download(path)
+
+    async def refresh(self, path: str) -> Json:
+        return cast(Json, json.loads(await self.download(path)))
