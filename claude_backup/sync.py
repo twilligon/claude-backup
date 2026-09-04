@@ -2,36 +2,23 @@
 # pyright: reportImplicitOverride=false, reportUnusedCallResult=false
 # pyright: reportPrivateUsage=false, reportIncompatibleVariableOverride=false
 
-from asyncio import Task
-from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Iterable
-from contextlib import aclosing, suppress
+from collections.abc import AsyncGenerator, Awaitable, Callable
+from contextlib import aclosing
 from dataclasses import dataclass
-from typing import TypeVar
-import asyncio
+from typing import TypeAlias
 import sys
 
 from .client import Client
-from .store import Account, Chat, Chats, ChatsEntry, Organization, Store
+from .store import Account, Asset, Chat, ChatsEntry, Organization, Store
+from .util import Channel, amerge, as_completed
 
-__all__ = ("Syncer",)
+__all__ = (
+    "Syncer",
+    "Fetch",
+)
 
 
-T = TypeVar("T")
-
-
-async def aroundrobin(*iterators: AsyncGenerator[T, None]) -> AsyncGenerator[T, None]:
-    try:
-        done = False
-        while not done:
-            done = True
-            for it in iterators:
-                with suppress(StopAsyncIteration):
-                    yield await anext(it)
-                    done = False
-    finally:
-        for it in iterators:
-            with suppress(BaseException):
-                await it.aclose()
+Fetch: TypeAlias = Awaitable[Chat | Asset]
 
 
 @dataclass(slots=True)
@@ -41,79 +28,47 @@ class Syncer:
     connections: int = 6
     success_delay: float = 0.25
 
-    async def _as_completed(
-        self, awaitables: AsyncIterator[Awaitable[T]]
-    ) -> AsyncGenerator[Task[T], None]:
-        pending: set[Task[T]] = set()
-
-        try:
-            for _ in range(self.connections):
-                try:
-                    awaitable = await anext(awaitables)
-                    pending.add(asyncio.ensure_future(awaitable))
-                except StopAsyncIteration:
-                    break
-
-            while pending:
-                done, pending = await asyncio.wait(
-                    pending, return_when=asyncio.FIRST_COMPLETED
-                )
-
-                for task in done:
-                    yield task
-
-                    await asyncio.sleep(self.success_delay)
-
-                    try:
-                        awaitable = await anext(awaitables)
-                        pending.add(asyncio.ensure_future(awaitable))
-                    except StopAsyncIteration:
-                        pass
-        except BaseException:
-            for task in pending:
-                task.cancel()
-            for task in pending:
-                with suppress(BaseException):
-                    await task
-            raise
-        finally:
-            if isinstance(awaitables, AsyncGenerator):
-                await awaitables.aclose()
-
-    def as_completed(
-        self, awaitables: Iterable[Awaitable[T]] | AsyncIterator[Awaitable[T]]
-    ) -> AsyncGenerator[Task[T], None]:
-        async def asyncify(
-            iterable: Iterable[Awaitable[T]],
-        ) -> AsyncGenerator[Awaitable[T], None]:
-            for item in iterable:
-                yield item
-
-        if isinstance(awaitables, AsyncIterator):
-            return self._as_completed(awaitables)
-        else:
-            return self._as_completed(asyncify(awaitables))
-
     async def get_organizations(self) -> AsyncGenerator[Organization]:
-        old_account = Account.load(self.client, self.store)
-        account = await Account.fetch(self.client, self.store)
+        account = Account(self.client, self.store)
+        account.set_data(await self.client.refresh(account.api_path()))
+
+        old_account = next(
+            (
+                old
+                for old in Account.load(self.client, self.store)
+                if old.uuid == account.uuid
+            ),
+            None,
+        )
+        if old_account and old_account.store_path() != account.store_path():
+            print(
+                f"Renaming account {old_account} to {account.name or account.uuid}",
+                file=sys.stderr,
+            )
+            self.store.rename(old_account.store_path(), account.store_path())
+            self.store.delete(old_account.store_path())
+        account.save()
 
         for membership in account.memberships():
             organization = membership.organization()
+            store_path = organization.store_path()
 
             if (
                 old_account
                 and (old_organization := old_account.organization(organization.uuid))
-                and old_organization.store_path() != organization.store_path()
+                and old_organization.slug() != organization.slug()
             ):
                 print(
                     f"Renaming organization {old_organization} to {organization.name or organization.uuid}",
                     file=sys.stderr,
                 )
-                old_dir = self.store.store_dir / old_organization.store_path()
-                new_dir = self.store.store_dir / organization.store_path()
-                with suppress(FileNotFoundError):
-                    old_dir.rename(new_dir)
+                self.store.rename(
+                    store_path.with_name(old_organization.slug()), store_path
+                )
+                self.store.rename(
+                    store_path.with_name(old_organization.slug() + ".json"),
+                    store_path.with_name(store_path.name + ".json"),
+                )
 
             if "chat" not in organization.capabilities:
                 print(
@@ -125,24 +80,33 @@ class Syncer:
             print(f"Fetching chats for organization {organization}", file=sys.stderr)
             yield organization
 
-    async def new_chat_fetches(self) -> AsyncGenerator[Task[Chat], None]:
-        def fetch_new_chat(entry: ChatsEntry, old_chat: Chat | None) -> Task[Chat]:
-            async def _fetch_new_chat() -> Chat:
+    async def new_fetches(self, channel: Channel[Fetch]) -> AsyncGenerator[Fetch, None]:
+        async def queue_new_assets(
+            put: Callable[[Fetch], Awaitable[None]], chat: Chat
+        ) -> None:
+            for file in chat.files():
+                for asset in file.assets():
+                    if asset.cached() is None:
+                        await put(asset.fetch())
+
+        async def fetch_new_chat(entry: ChatsEntry, old_chat: Chat | None) -> Chat:
+            async with channel.writer() as put:
                 chat = await entry.fetch_chat()
 
                 if old_chat and old_chat.store_path() != chat.store_path():
                     old_chat.delete_cached()
 
+                await queue_new_assets(put, chat)
+
                 return chat
 
-            return asyncio.create_task(_fetch_new_chat())
-
-        chats_lists: list[Chats] = [
-            organization.chat_list() async for organization in self.get_organizations()
-        ]
-
-        async with aclosing(
-            aroundrobin(*(chats.entries() for chats in chats_lists))
+        async with channel.writer() as put, aclosing(
+            amerge(
+                *[
+                    organization.chat_list().entries()
+                    async for organization in self.get_organizations()
+                ]
+            )
         ) as items:
             async for entry in items:
                 # we must get old_entry *now* and not in the async function in
@@ -151,12 +115,20 @@ class Syncer:
                 old_entry = entry.chat_list.entry(entry.uuid)
                 old_chat = old_entry.load_chat() if old_entry else None
                 if old_chat and old_chat.updated_at == entry.updated_at:
+                    await queue_new_assets(put, old_chat)
                     continue
 
                 entry.print()
                 yield fetch_new_chat(entry, old_chat)
 
     async def sync_all(self) -> None:
-        async with aclosing(self.as_completed(self.new_chat_fetches())) as tasks:
+        channel: Channel[Fetch] = Channel()
+        async with channel.reader() as reader, aclosing(
+            as_completed(
+                amerge(reader, self.new_fetches(channel)),
+                self.connections,
+                self.success_delay,
+            )
+        ) as tasks:
             async for task in tasks:
                 await task

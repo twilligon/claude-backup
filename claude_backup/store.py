@@ -3,13 +3,14 @@
 # pyright: reportPrivateUsage=false, reportIncompatibleVariableOverride=false
 
 from collections import defaultdict
-from collections.abc import AsyncGenerator, Callable, Iterator
-from contextlib import suppress
+from collections.abc import AsyncGenerator, Callable, Generator, Iterator
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import datetime
+from io import TextIOWrapper
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from typing import Any, ClassVar, TypeVar, cast, final
+from typing import IO, Any, ClassVar, TypeVar, cast, final
 from uuid import UUID
 import json
 import os
@@ -25,14 +26,22 @@ __all__ = (
     "Immutable",
     "Nameable",
     "Timestamped",
-    "Loadable",
     "Account",
     "Membership",
     "Organization",
     "Chats",
     "ChatsEntry",
     "Chat",
+    "File",
+    "Asset",
 )
+
+
+JSON_ARGS: dict[str, Any] = {
+    "ensure_ascii": False,
+    "check_circular": False,
+    "separators": (",", ":"),
+}
 
 
 T_APIObject = TypeVar("T_APIObject", bound="APIObject")
@@ -50,17 +59,15 @@ class Store:
     def _set_chat_mtimes(self) -> None:
         self._fix_bad_slug_paths()
 
-        if account := Account.load(None, self):  # pyright: ignore[reportArgumentType]
+        for account in Account.load(None, self):  # pyright: ignore[reportArgumentType]
             for membership in account.memberships():
                 if chats := membership.organization().chat_list():
                     for entry in chats.cached_entries():
                         if chat := entry.load_chat():
-                            self.save(
-                                chat.store_path(), chat.get_data(), chat.get_mtime()
-                            )
+                            chat.save()
 
     def _fix_bad_slug_paths(self) -> None:
-        if account := Account.load(None, self):  # pyright: ignore[reportArgumentType]
+        for account in Account.load(None, self):  # pyright: ignore[reportArgumentType]
             for membership in account.memberships():
                 if chats := membership.organization().chat_list():
                     for entry in chats.cached_entries():
@@ -105,27 +112,32 @@ class Store:
             migrate_step(self)
             (self.store_dir / "version").write_text(f"{version}\n")
 
+    def rename(self, old_path: Path, new_path: Path) -> bool:
+        old_dir = self.store_dir / old_path
+        new_dir = self.store_dir / new_path
+        if not old_dir.exists() or new_dir.exists():
+            return False
+
+        new_dir.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        old_dir.rename(new_dir)
+        return True
+
+    @contextmanager
     def save(
-        self, path: Path, data: Json, mtime: datetime | float | None = None
-    ) -> None:
-        cache_file = self.store_dir / path.with_name(path.name + ".json")
+        self, path: Path, mtime: datetime | float | None = None
+    ) -> Generator[IO[bytes], None, None]:
+        cache_file = self.store_dir / path
         cache_file.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
 
         with NamedTemporaryFile(
-            "w",
+            "wb",
             prefix=f"{cache_file.name}-",
             dir=cache_file.parent,
             delete=False,
         ) as f:
             try:
-                json.dump(
-                    data,
-                    f,
-                    ensure_ascii=False,
-                    check_circular=False,
-                    separators=(",", ":"),
-                )
-                f.flush()
+                yield f
+                f.close()
                 Path(f.name).rename(cache_file)
             except BaseException:
                 Path(f.name).unlink(missing_ok=True)
@@ -134,6 +146,13 @@ class Store:
         if mtime is not None:
             mtime = mtime.timestamp() if isinstance(mtime, datetime) else mtime
             os.utime(cache_file, (mtime, mtime))
+
+    def find(self, path: Path) -> Path | None:
+        if self.ignore_cache:
+            return None
+
+        cache_file = self.store_dir / path
+        return cache_file if cache_file.is_file() else None
 
     def load(self, path: Path) -> Json | None:
         if self.ignore_cache:
@@ -215,7 +234,12 @@ class APIObject:
         return self.set_data(await self.client.refresh(self.api_path())).save()
 
     def save(self: T_APIObject) -> T_APIObject:
-        self.store.save(self.store_path(), self.get_data(), self.get_mtime())
+        path = self.store_path()
+        with self.store.save(
+            path.with_name(path.name + ".json"), self.get_mtime()
+        ) as f:
+            with TextIOWrapper(f, encoding="utf-8") as text:
+                json.dump(self.get_data(), text, **JSON_ARGS)
         return self
 
     def delete_cached(self) -> None:
@@ -226,15 +250,7 @@ class Immutable(APIObject):
     __slots__ = ()
 
     def __hash__(self) -> int:
-        return hash(
-            json.dumps(
-                self._data,
-                ensure_ascii=False,
-                sort_keys=True,
-                check_circular=False,
-                separators=(",", ":"),
-            )
-        )
+        return hash(json.dumps(self._data, sort_keys=True, **JSON_ARGS))
 
     def __eq__(self, other: object) -> bool:
         if type(self) is type(other):
@@ -302,21 +318,6 @@ class Timestamped(APIObject):
         return self.updated_at
 
 
-T_Loadable = TypeVar("T_Loadable", bound="Loadable")
-
-
-class Loadable(APIObject):
-    __slots__ = ()
-
-    @classmethod
-    def load(cls: type[T_Loadable], client: Client, store: Store) -> T_Loadable | None:
-        return cls._load(client, store)
-
-    @classmethod
-    async def fetch(cls: type[T_Loadable], client: Client, store: Store) -> T_Loadable:
-        return await cls._fetch(client, store)
-
-
 @final
 class Chat(Timestamped, Nameable):
     __slots__ = (
@@ -348,7 +349,102 @@ class Chat(Timestamped, Nameable):
         )
 
     def store_path(self) -> Path:
-        return self.chat_list.store_path() / self.slug()
+        return self.chat_list.store_path() / "chats" / self.slug()
+
+    def files(self) -> Iterator["File"]:
+        seen: set[str] = set()
+        for message in cast(list[JsonD], self._data.get("chat_messages") or []):
+            for data in cast(list[JsonD], message.get("files") or []):
+                file = File(self).set_data(data)
+                if file.uuid not in seen:
+                    seen.add(file.uuid)
+                    yield file
+
+
+@final
+class File(Timestamped, Nameable):
+    __slots__ = (
+        "chat",
+        "_data",
+    )
+
+    chat: Chat
+    _data: JsonD
+
+    def __init__(self, chat: Chat):
+        self.chat = chat
+
+    @property
+    def client(self) -> Client:
+        return self.chat.client
+
+    @property
+    def store(self) -> Store:
+        return self.chat.store
+
+    @property
+    def name(self) -> str | None:
+        return cast(str, self._data.get("file_name")) or None
+
+    def get_mtime(self) -> datetime | float | None:
+        return self.updated_at or self.created_at
+
+    def api_path(self) -> str:
+        return f"{self.chat.chat_list.organization.uuid}/files/{self.uuid}"
+
+    def store_path(self) -> Path:
+        return self.chat.chat_list.organization.store_path() / "files" / self.slug()
+
+    def assets(self) -> Iterator["Asset"]:
+        for key, data in self._data.items():
+            if key.endswith("_asset"):
+                yield Asset(self).set_data(cast(JsonD, data))
+
+
+@final
+class Asset(APIObject):
+    __slots__ = (
+        "file",
+        "_data",
+    )
+
+    file: File
+    _data: JsonD
+
+    def __init__(self, file: File):
+        self.file = file
+
+    @property
+    def client(self) -> Client:
+        return self.file.client
+
+    @property
+    def store(self) -> Store:
+        return self.file.store
+
+    @property
+    def variant(self) -> str:
+        return cast(str, self._data["url"]).rsplit("/", 1)[-1]
+
+    def __str__(self) -> str:
+        return f"{self.variant} of {self.file}"
+
+    def get_mtime(self) -> datetime | float | None:
+        return self.file.get_mtime()
+
+    def api_path(self) -> str:
+        return f"{self.file.api_path()}/{self.variant}"
+
+    def store_path(self) -> Path:
+        return self.file.store_path() / self.variant
+
+    def cached(self) -> Path | None:
+        return self.store.find(self.store_path())
+
+    async def fetch(self) -> "Asset":
+        with self.store.save(self.store_path(), self.get_mtime()) as f:
+            f.write(await self.client.download(self.api_path()))
+        return self
 
 
 @final
@@ -382,7 +478,7 @@ class ChatsEntry(Timestamped, Nameable, Immutable):
         )
 
     def chat_store_path(self) -> Path:
-        return self.chat_list.store_path() / self.slug()
+        return self.chat_list.store_path() / "chats" / self.slug()
 
     def load_chat(self) -> Chat | None:
         return Chat._load(self.chat_list, store_path=self.chat_store_path())
@@ -431,7 +527,7 @@ class Chats(APIObject):
         return f"{self.organization.api_path()}/chat_conversations"
 
     def store_path(self) -> Path:
-        return self.organization.store_path() / "chat_conversations"
+        return self.organization.store_path()
 
     def set_data(self, data: Json) -> "Chats":
         # convert list (reverse chronological from API) to dict (forward chronological)
@@ -572,26 +668,31 @@ class Chats(APIObject):
 
 
 @final
-class Organization(Nameable, Loadable):
+class Organization(Nameable):
     __slots__ = (
-        "_client",
-        "_store",
+        "account",
         "_data",
     )
 
-    _client: Client
-    _store: Store
+    account: "Account"
     _data: JsonD
 
-    def __init__(self, client: Client, store: Store):
-        self._client = client
-        self._store = store
+    def __init__(self, account: "Account"):
+        self.account = account
+
+    @property
+    def client(self) -> Client:
+        return self.account.client
+
+    @property
+    def store(self) -> Store:
+        return self.account.store
 
     def api_path(self) -> str:
         return f"organizations/{self.uuid}"
 
     def store_path(self) -> Path:
-        return Path("organizations") / self.slug()
+        return Path(self.account.slug()) / self.slug()
 
     @property
     def capabilities(self) -> list[str]:
@@ -623,13 +724,13 @@ class Membership(Immutable):
         return self.account.store
 
     def organization(self) -> Organization:
-        return Organization(self.client, self.store).set_data(
+        return Organization(self.account).set_data(
             cast(JsonD, self._data["organization"])
         )
 
 
 @final
-class Account(Nameable, Loadable):
+class Account(Nameable):
     __slots__ = (
         "_client",
         "_store",
@@ -644,11 +745,22 @@ class Account(Nameable, Loadable):
         self._client = client
         self._store = store
 
+    @property
+    def name(self) -> str | None:
+        return cast(str, self._data.get("email_address")) or None
+
     def api_path(self) -> str:
         return "account"
 
     def store_path(self) -> Path:
-        return Path("account")
+        return Path(self.slug())
+
+    @classmethod
+    def load(cls, client: Client, store: Store) -> Iterator["Account"]:
+        for cache_file in store.store_dir.glob("*-*.json"):
+            store_path = Path(cache_file.name.removesuffix(".json"))
+            if account := cls._load(client, store, store_path=store_path):
+                yield account
 
     def memberships(self) -> Iterator[Membership]:
         for membership in cast(list[JsonD], self._data["memberships"]):
