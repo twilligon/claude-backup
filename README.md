@@ -36,26 +36,26 @@ Chats are stored as their original API JSON with nice `find`able names and `grep
     4ddbcc12-5cd8-4611-813a-befdedeb4b16    Smithsonian funding and government ownership
     $ tree ~/.local/share/claude-backup | head -n15
     ~/.local/share/claude-backup
-    ├── claude@twilligon.com-f6c59c68-2f18-4ec0-b488-b237e1f82045
-    │   ├── claude@twilligon.com's_Organization-9e9a56fc-6d1c-4d62-a96d-0cff3a473cf0
-    │   │   ├── chats
-    │   │   │   ├── Free_Indirect_Discourse_Analysis-48d70be1-f23d-4757-9bcf-9d9d9711a3f6.json
-    │   │   │   ├── Fetty_Wap_name_origin-dc45880a-8c60-4366-b610-e4fe6bb9a65c.json
-    │   │   │   ├── Ryzen_Motherboard_PS_2_Port_Hunt-012583f0-83cc-4c18-8f8b-312c8cb856ac.json
-    │   │   │   ├── Tailscale_versus_wireguard_comparison-24ed7155-8d9e-410f-bf7c-cd3fb6cb4379.json
-    │   │   │   ├── Credit_card_companies_in_Europe-67ad5f75-80ba-4754-bc6c-7d21e98f948c.json
-    │   │   │   ├── OpenGL_and_Vulkan_Package_Compatibility-63859641-5ffe-459b-99b0-4759acdc8235.json
-    │   │   │   ├── Government_tech_capabilities_and_bureaucracy-1c0743f0-a124-456b-888f-d08c5b83923b.json
-    │   │   │   ├── Reverse_Engineering_Minified_JavaScript-8cf7cab1-9576-45d7-929a-ea34997b0061.json
-    │   │   │   ├── Wire_and_String_Mysteries-9ac747b7-f36e-4e86-9f24-377ab16fb5ec.json
-    │   │   │   ├── US_Senate_parliamentarian's_role_and_power-5fa34eb3-ac74-4683-8850-c90761e5f3d8.json
-    │   │   │   ├── Georgians_in_Flannery_O'Connor's_papers-8ad4fcfb-db34-441c-96b6-2e0a64cfb2fd.json
-    $ rg -0l falafel ~/.local/share/claude-backup/*/*/chats | xargs -0n1 basename
+    └── 0.1.13
+        ├── claude@twilligon.com-f6c59c68-2f18-4ec0-b488-b237e1f82045
+        │   ├── claude@twilligon.com's_Organization-9e9a56fc-6d1c-4d62-a96d-0cff3a473cf0
+        │   │   ├── chats
+        │   │   │   ├── Free_Indirect_Discourse_Analysis-48d70be1-f23d-4757-9bcf-9d9d9711a3f6.json
+        │   │   │   ├── Fetty_Wap_name_origin-dc45880a-8c60-4366-b610-e4fe6bb9a65c.json
+        │   │   │   ├── Ryzen_Motherboard_PS_2_Port_Hunt-012583f0-83cc-4c18-8f8b-312c8cb856ac.json
+        │   │   │   ├── Tailscale_versus_wireguard_comparison-24ed7155-8d9e-410f-bf7c-cd3fb6cb4379.json
+        │   │   │   ├── Credit_card_companies_in_Europe-67ad5f75-80ba-4754-bc6c-7d21e98f948c.json
+        │   │   │   ├── OpenGL_and_Vulkan_Package_Compatibility-63859641-5ffe-459b-99b0-4759acdc8235.json
+        │   │   │   ├── Government_tech_capabilities_and_bureaucracy-1c0743f0-a124-456b-888f-d08c5b83923b.json
+        │   │   │   ├── Reverse_Engineering_Minified_JavaScript-8cf7cab1-9576-45d7-929a-ea34997b0061.json
+        │   │   │   ├── Wire_and_String_Mysteries-9ac747b7-f36e-4e86-9f24-377ab16fb5ec.json
+        │   │   │   ├── US_Senate_parliamentarian's_role_and_power-5fa34eb3-ac74-4683-8850-c90761e5f3d8.json
+    $ rg -0l falafel ~/.local/share/claude-backup/*/*/*/chats | xargs -0n1 basename
     Fixing_dry_falafel_centers-08217feb-c912-40c2-9d14-f89784d61ab5.json
     Best_falafel_restaurants_in_San_Francisco-76aa159a-e41a-4935-a2e5-d53465041e13.json
     Rainy_day_food_delivery_dilemma-db4992e8-c69c-4085-a571-9a22dfff68da.json
     Pita_Chip_Conversation_Search-059dca9c-bac3-4cd5-b405-34ddbbdd5fa8.json
-    $ rg -0l falafel ~/.local/share/claude-backup/*/*/chats | xargs -0 jq -r '"https://claude.ai/chat/\(.uuid)"'
+    $ rg -0l falafel ~/.local/share/claude-backup/*/*/*/chats | xargs -0 jq -r '"https://claude.ai/chat/\(.uuid)"'
     https://claude.ai/chat/08217feb-c912-40c2-9d14-f89784d61ab5
     https://claude.ai/chat/76aa159a-e41a-4935-a2e5-d53465041e13
     https://claude.ai/chat/db4992e8-c69c-4085-a571-9a22dfff68da

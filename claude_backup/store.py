@@ -2,10 +2,9 @@
 # pyright: reportImplicitOverride=false, reportUnusedCallResult=false
 # pyright: reportPrivateUsage=false, reportIncompatibleVariableOverride=false
 
-from collections import defaultdict
-from collections.abc import AsyncGenerator, Callable, Generator, Iterator
+from collections.abc import AsyncGenerator, Generator, Iterator
 from contextlib import contextmanager, suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from io import TextIOWrapper
 from pathlib import Path
@@ -14,7 +13,6 @@ from typing import IO, Any, ClassVar, TypeVar, cast, final
 from uuid import UUID
 import json
 import os
-import shutil
 import sys
 
 from . import __version__
@@ -49,67 +47,23 @@ T_APIObject = TypeVar("T_APIObject", bound="APIObject")
 
 @dataclass(slots=True)
 class Store:
-    def _wipe(self) -> None:
-        for entry in self.store_dir.iterdir():
-            if entry.is_dir():
-                shutil.rmtree(entry)
-            else:
-                entry.unlink()
+    backup_dir: Path
+    store_dir: Path = field(init=False)
 
-    def _set_chat_mtimes(self) -> None:
-        self._fix_bad_slug_paths()
+    def __post_init__(self) -> None:
+        self.store_dir = self.backup_dir / __version__
+        self.backup_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
 
-        for account in Account.load(None, self):  # pyright: ignore[reportArgumentType]
-            for membership in account.memberships():
-                if chats := membership.organization().chat_list():
-                    for entry in chats.cached_entries():
-                        if chat := entry.load_chat():
-                            chat.save()
+        version_file = self.backup_dir / "version"
+        if version_file.is_file() and (version := version_file.read_text().strip()):
+            old_dir = self.backup_dir / version
+            old_dir.mkdir(mode=0o700, exist_ok=True)
+            for entry in self.backup_dir.iterdir():
+                if entry not in (old_dir, version_file):
+                    entry.rename(old_dir / entry.name)
+            version_file.rename(old_dir / version_file.name)
 
-    def _fix_bad_slug_paths(self) -> None:
-        for account in Account.load(None, self):  # pyright: ignore[reportArgumentType]
-            for membership in account.memberships():
-                if chats := membership.organization().chat_list():
-                    for entry in chats.cached_entries():
-                        old_path = entry.chat_store_path().with_suffix("")
-                        if entry.chat_store_path() != old_path and (
-                            chat := Chat._load(chats, store_path=old_path)
-                        ):
-                            chat.save()
-                            self.delete(old_path)
-
-    MIGRATIONS: ClassVar[
-        defaultdict[str | None, tuple[str, Callable[["Store"], None]]]
-    ] = defaultdict(
-        # migrate from unknown versions by not migrating anything/starting over
-        lambda: (__version__, Store._wipe),
-        {
-            "0.1.7": ("0.1.8", lambda _: None),
-            "0.1.8": ("0.1.9", _set_chat_mtimes),
-            "0.1.9": ("0.1.10", lambda _: None),
-            "0.1.10": ("0.1.11", lambda _: None),
-            "0.1.11": ("0.1.12", _fix_bad_slug_paths),
-        },
-    )
-
-    store_dir: Path
-
-    def __post_init__(self):
-        if not self.store_dir.exists():
-            self.store_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-            (self.store_dir / "version").write_text(f"{__version__}\n")
-            return
-
-        try:
-            version = (self.store_dir / "version").read_text().strip()
-        except FileNotFoundError:
-            (self.store_dir / "version").write_text(f"{__version__}\n")
-            return
-
-        while version != __version__:
-            version, migrate_step = self.MIGRATIONS[version]
-            migrate_step(self)
-            (self.store_dir / "version").write_text(f"{version}\n")
+        self.store_dir.mkdir(mode=0o700, exist_ok=True)
 
     def rename(self, old_path: Path, new_path: Path) -> bool:
         old_dir = self.store_dir / old_path

@@ -95,7 +95,7 @@ async def _run(argv: Sequence[str], keys: Iterable[str]) -> None:
     if isinstance(args.backup_dir, DefaultPath):
         args.backup_dir = args.backup_dir.path
 
-    store = Store(store_dir=Path(args.backup_dir))
+    store = Store(Path(args.backup_dir))
 
     for key in keys:
         async with Client(
