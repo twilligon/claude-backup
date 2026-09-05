@@ -13,6 +13,7 @@ from typing import IO, Any, ClassVar, Protocol, TypeVar, cast, final
 from uuid import UUID
 import json
 import os
+import shutil
 import sys
 
 from . import __version__
@@ -390,12 +391,7 @@ class ChatsEntry(Timestamped, Nameable, Immutable):
         name = self.name or ""
 
         if sys.stdout.isatty():
-            try:
-                width = os.get_terminal_size().columns
-            except OSError:
-                width = 80
-
-            max_len = width - 36 - 4
+            max_len = shutil.get_terminal_size().columns - 36 - 4
             if len(name) > max_len:
                 name = name[: max_len - 1] + "…"
 
