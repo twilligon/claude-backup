@@ -9,7 +9,7 @@ from datetime import datetime
 from io import TextIOWrapper
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from typing import IO, Any, ClassVar, TypeVar, cast, final
+from typing import IO, Any, ClassVar, Protocol, TypeVar, cast, final
 from uuid import UUID
 import json
 import os
@@ -127,21 +127,30 @@ class Store:
             parent = parent.parent
 
 
-class APIObject:
-    __slots__: tuple[str, ...] = ("__weakref__", "_data")
+class Parent(Protocol):
+    @property
+    def client(self) -> Client: ...
 
-    __weakref__: Any  # pyright: ignore[reportUninitializedInstanceVariable]
-    _client: Client  # pyright: ignore[reportUninitializedInstanceVariable]
-    _store: Store  # pyright: ignore[reportUninitializedInstanceVariable]
+    @property
+    def store(self) -> Store: ...
+
+
+class APIObject:
+    __slots__: tuple[str, ...] = ("parent", "_data")
+
+    parent: Parent
     _data: Json  # pyright: ignore[reportUninitializedInstanceVariable]
+
+    def __init__(self, parent: Parent) -> None:
+        self.parent = parent
 
     @property
     def client(self) -> Client:
-        return self._client
+        return self.parent.client
 
     @property
     def store(self) -> Store:
-        return self._store
+        return self.parent.store
 
     def get_data(self) -> Json:
         return self._data
@@ -162,10 +171,11 @@ class APIObject:
     @classmethod
     def _load(
         cls: type[T_APIObject],
-        *args: Any,
+        parent: Parent,
+        *,
         store_path: Path | None = None,
     ) -> T_APIObject | None:
-        obj = cls(*args)
+        obj = cls(parent)
         data = obj.store.load(store_path or obj.store_path())
         if data is not None:
             return obj.set_data(data)
@@ -175,10 +185,11 @@ class APIObject:
     @classmethod
     async def _fetch(
         cls: type[T_APIObject],
-        *args: Any,
+        parent: Parent,
+        *,
         api_path: str | None = None,
     ) -> T_APIObject:
-        obj = cls(*args)
+        obj = cls(parent)
         data = await obj.client.refresh(api_path or obj.api_path())
         return obj.set_data(data).save()
 
@@ -272,24 +283,14 @@ class Timestamped(APIObject):
 
 @final
 class Chat(Timestamped, Nameable):
-    __slots__ = ("chat_list",)
+    __slots__ = ()
 
-    chat_list: "Chats"
+    parent: "Chats"
     _data: JsonD
 
-    def __init__(
-        self,
-        chat_list: "Chats",
-    ):
-        self.chat_list = chat_list
-
     @property
-    def client(self) -> Client:
-        return self.chat_list.client
-
-    @property
-    def store(self) -> Store:
-        return self.chat_list.store
+    def chat_list(self) -> "Chats":
+        return self.parent
 
     def api_path(self) -> str:
         return (
@@ -312,21 +313,14 @@ class Chat(Timestamped, Nameable):
 
 @final
 class File(Timestamped, Nameable):
-    __slots__ = ("chat",)
+    __slots__ = ()
 
-    chat: Chat
+    parent: Chat
     _data: JsonD
 
-    def __init__(self, chat: Chat):
-        self.chat = chat
-
     @property
-    def client(self) -> Client:
-        return self.chat.client
-
-    @property
-    def store(self) -> Store:
-        return self.chat.store
+    def chat(self) -> Chat:
+        return self.parent
 
     @property
     def name(self) -> str | None:
@@ -349,21 +343,14 @@ class File(Timestamped, Nameable):
 
 @final
 class Asset(APIObject):
-    __slots__ = ("file",)
+    __slots__ = ()
 
-    file: File
+    parent: File
     _data: JsonD
 
-    def __init__(self, file: File):
-        self.file = file
-
     @property
-    def client(self) -> Client:
-        return self.file.client
-
-    @property
-    def store(self) -> Store:
-        return self.file.store
+    def file(self) -> File:
+        return self.parent
 
     @property
     def variant(self) -> str:
@@ -392,24 +379,14 @@ class Asset(APIObject):
 
 @final
 class ChatsEntry(Timestamped, Nameable, Immutable):
-    __slots__ = ("chat_list",)
+    __slots__ = ()
 
-    chat_list: "Chats"
+    parent: "Chats"
     _data: JsonD
 
-    def __init__(
-        self,
-        chat_list: "Chats",
-    ):
-        self.chat_list = chat_list
-
     @property
-    def client(self) -> Client:
-        return self.chat_list.client
-
-    @property
-    def store(self) -> Store:
-        return self.chat_list.store
+    def chat_list(self) -> "Chats":
+        return self.parent
 
     def chat_api_path(self) -> str:
         return (
@@ -444,24 +421,20 @@ class ChatsEntry(Timestamped, Nameable, Immutable):
 
 @final
 class Chats(APIObject):
-    __slots__ = ("organization", "unseen")
+    __slots__ = ("unseen",)
 
-    organization: "Organization"
+    parent: "Organization"
     _data: dict[str, ChatsEntry]
     unseen: int
 
-    def __init__(self, organization: "Organization"):
-        self.organization = organization
+    def __init__(self, parent: "Organization"):
+        super().__init__(parent)
         self.unseen = 0
         self._data = {}
 
     @property
-    def client(self) -> Client:
-        return self.organization.client
-
-    @property
-    def store(self) -> Store:
-        return self.organization.store
+    def organization(self) -> "Organization":
+        return self.parent
 
     def api_path(self) -> str:
         return f"{self.organization.api_path()}/chat_conversations"
@@ -609,21 +582,14 @@ class Chats(APIObject):
 
 @final
 class Organization(Nameable):
-    __slots__ = ("account",)
+    __slots__ = ()
 
-    account: "Account"
+    parent: "Account"
     _data: JsonD
 
-    def __init__(self, account: "Account"):
-        self.account = account
-
     @property
-    def client(self) -> Client:
-        return self.account.client
-
-    @property
-    def store(self) -> Store:
-        return self.account.store
+    def account(self) -> "Account":
+        return self.parent
 
     def api_path(self) -> str:
         return f"organizations/{self.uuid}"
@@ -641,21 +607,14 @@ class Organization(Nameable):
 
 @final
 class Membership(Immutable):
-    __slots__ = ("account",)
+    __slots__ = ()
 
-    account: "Account"
+    parent: "Account"
     _data: JsonD
 
-    def __init__(self, account: "Account"):
-        self.account = account
-
     @property
-    def client(self) -> Client:
-        return self.account.client
-
-    @property
-    def store(self) -> Store:
-        return self.account.store
+    def account(self) -> "Account":
+        return self.parent
 
     def organization(self) -> Organization:
         return Organization(self.account).set_data(
@@ -665,15 +624,9 @@ class Membership(Immutable):
 
 @final
 class Account(Nameable):
-    __slots__ = ("_client", "_store")
+    __slots__ = ()
 
-    _client: Client
-    _store: Store
     _data: JsonD
-
-    def __init__(self, client: Client, store: Store):
-        self._client = client
-        self._store = store
 
     @property
     def name(self) -> str | None:
@@ -686,10 +639,10 @@ class Account(Nameable):
         return Path(self.slug())
 
     @classmethod
-    def load(cls, client: Client, store: Store) -> Iterator["Account"]:
-        for cache_file in store.store_dir.glob("*-*.json"):
+    def load(cls, parent: Parent) -> Iterator["Account"]:
+        for cache_file in parent.store.store_dir.glob("*-*.json"):
             store_path = Path(cache_file.name.removesuffix(".json"))
-            if account := cls._load(client, store, store_path=store_path):
+            if account := cls._load(parent, store_path=store_path):
                 yield account
 
     def memberships(self) -> Iterator[Membership]:

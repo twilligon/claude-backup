@@ -29,15 +29,11 @@ class Syncer:
     success_delay: float = 0.25
 
     async def get_organizations(self) -> AsyncGenerator[Organization]:
-        account = Account(self.client, self.store)
+        account = Account(self)
         account.set_data(await self.client.refresh(account.api_path()))
 
         old_account = next(
-            (
-                old
-                for old in Account.load(self.client, self.store)
-                if old.uuid == account.uuid
-            ),
+            (old for old in Account.load(self) if old.uuid == account.uuid),
             None,
         )
         if old_account and old_account.store_path() != account.store_path():
