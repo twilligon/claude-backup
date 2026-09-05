@@ -13,7 +13,7 @@ from collections.abc import (
 )
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
-from typing import Generic, TypeVar
+from typing import Any, Generic, TypeVar
 import asyncio
 
 __all__ = (
@@ -31,6 +31,30 @@ U = TypeVar("U")
 
 class Hangup(Exception):
     pass
+
+
+async def cancel_all(*futures: "asyncio.Future[Any]") -> None:
+    for future in futures:
+        future.cancel()
+
+    for future in futures:
+        if not future.done():
+            waiter: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+
+            def release(
+                _: "asyncio.Future[Any]", waiter: asyncio.Future[None] = waiter
+            ) -> None:
+                if not waiter.done():
+                    waiter.set_result(None)
+
+            future.add_done_callback(release)
+            try:
+                await waiter
+            finally:
+                future.remove_done_callback(release)
+
+        if not future.cancelled():
+            future.exception()
 
 
 @dataclass(slots=True)
@@ -62,10 +86,7 @@ class Channel(Generic[T]):
                 return task.result()
             raise Hangup
         finally:
-            for future in (task, waiter):
-                future.cancel()
-                with suppress(BaseException):
-                    await future
+            await cancel_all(task, waiter)
 
     @asynccontextmanager
     async def reader(self) -> AsyncGenerator[AsyncGenerator[T, None], None]:
@@ -123,15 +144,10 @@ async def amerge(*iterables: Iterable[T] | AsyncIterable[T]) -> AsyncGenerator[T
             else:
                 pending[source] = asyncio.ensure_future(anext(source))
     finally:
-        for task in pending.values():
-            task.cancel()
-        for task in pending.values():
-            with suppress(BaseException):
-                await task
+        await cancel_all(*pending.values())
         for source in pending:
             if isinstance(source, AsyncGenerator):
-                with suppress(BaseException):
-                    await source.aclose()
+                await source.aclose()
 
 
 async def as_completed(
@@ -166,11 +182,7 @@ async def as_completed(
                 except StopAsyncIteration:
                     pass
     except BaseException:
-        for task in pending:
-            task.cancel()
-        for task in pending:
-            with suppress(BaseException):
-                await task
+        await cancel_all(*pending)
         raise
     finally:
         if isinstance(source, AsyncGenerator):
