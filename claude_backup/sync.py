@@ -100,26 +100,20 @@ class Syncer:
 
                 return chat
 
-        async with channel.writer() as put, aclosing(
-            amerge(
-                *[
-                    organization.chat_list().entries()
-                    async for organization in self.get_organizations()
-                ]
-            )
-        ) as items:
-            async for entry in items:
-                # we must get old_entry *now* and not in the async function in
-                # fetch_new_chat, since Chats.new_entries might finish and save
-                # the new entry over old_entry!
-                old_entry = entry.chat_list.entry(entry.uuid)
-                old_chat = old_entry.load_chat() if old_entry else None
-                if old_chat and old_chat.updated_at == entry.updated_at:
-                    await queue_new_assets(put, old_chat)
-                    continue
+        async with channel.writer() as put:
+            async for organization in self.get_organizations():
+                async for entry in organization.chat_list().entries():
+                    # we must get old_entry *now* and not in the async function
+                    # in fetch_new_chat, since Chats.new_entries might finish
+                    # and save the new entry over old_entry!
+                    old_entry = entry.chat_list.entry(entry.uuid)
+                    old_chat = old_entry.load_chat() if old_entry else None
+                    if old_chat and old_chat.updated_at == entry.updated_at:
+                        await queue_new_assets(put, old_chat)
+                        continue
 
-                entry.print()
-                yield fetch_new_chat(entry, old_chat)
+                    entry.print()
+                    yield fetch_new_chat(entry, old_chat)
 
     async def sync_all(self) -> None:
         channel: Channel[Fetch] = Channel()
