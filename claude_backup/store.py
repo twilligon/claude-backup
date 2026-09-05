@@ -386,7 +386,7 @@ class Asset(APIObject):
 
     async def fetch(self) -> "Asset":
         with self.store.save(self.store_path(), self.get_mtime()) as f:
-            f.write(await self.client.download(self.api_path()))
+            await self.client.download(self.api_path(), f)
         return self
 
 

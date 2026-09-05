@@ -3,8 +3,9 @@
 # pyright: reportPrivateUsage=false, reportIncompatibleVariableOverride=false
 
 from dataclasses import dataclass, field
+from io import BytesIO
 from types import TracebackType
-from typing import TypeAlias, cast
+from typing import IO, TypeAlias, cast
 import asyncio
 import json
 import sys
@@ -65,7 +66,7 @@ class Client:
     ) -> bool | None:
         return await self.session.__aexit__(exc_type, exc_val, exc_tb)
 
-    async def _download(self, path: str) -> bytes:
+    async def _download(self, path: str, sink: IO[bytes]) -> None:
         # i have never seen a 429 or in fact a 4xx error of any kind from this
         # api, nor ratelimit headers or fields on the returned stuff (i've seen
         # 403 Forbidden from cloudflare, in front of claude.ai, but only behind
@@ -78,23 +79,29 @@ class Client:
         ) as r:
             # explicitly check r.status instead of using r.raise_for_status
             # because we want to raise for r.status >= 300 not just >= 400
-            if 200 <= r.status < 300:
-                return await r.read()
+            if not 200 <= r.status < 300:
+                raise ClientResponseError(
+                    r.request_info,
+                    r.history,
+                    status=r.status,
+                    message=r.reason or "",
+                    headers=r.headers,
+                )
 
-            raise ClientResponseError(
-                r.request_info,
-                r.history,
-                status=r.status,
-                message=r.reason or "",
-                headers=r.headers,
-            )
+            if r.content_length is not None:
+                sink.truncate(r.content_length)
+            async for chunk in r.content.iter_any():
+                sink.write(chunk)
 
-    async def download(self, path: str) -> bytes:
+    async def download(self, path: str, sink: IO[bytes]) -> None:
         retry_delay = self.min_retry_delay
         for retry in range(self.retries - 1):
             try:
-                return await self._download(path)
+                await self._download(path, sink)
+                return
             except Exception as e:
+                sink.seek(0)
+                sink.truncate()
                 print(
                     f"Error fetching {path} (try {retry+1} of {self.retries}, "
                     + f"waiting {retry_delay:.1f}s): {e}",
@@ -103,7 +110,9 @@ class Client:
                 await asyncio.sleep(retry_delay)
                 retry_delay = min(retry_delay * 2, self.max_retry_delay)
 
-        return await self._download(path)
+        await self._download(path, sink)
 
     async def refresh(self, path: str) -> Json:
-        return cast(Json, json.loads(await self.download(path)))
+        with BytesIO() as sink:
+            await self.download(path, sink)
+            return cast(Json, json.loads(sink.getvalue()))
