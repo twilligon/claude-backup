@@ -55,7 +55,9 @@ class Store:
         self.backup_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
 
         version_file = self.backup_dir / "version"
-        if version_file.is_file() and (version := version_file.read_text().strip()):
+        if version_file.is_file() and (
+            version := version_file.read_text(encoding="utf-8").strip()
+        ):
             old_dir = self.backup_dir / version
             old_dir.mkdir(mode=0o700, exist_ok=True)
             for entry in self.backup_dir.iterdir():
@@ -106,7 +108,9 @@ class Store:
 
     def load(self, path: Path) -> Json | None:
         cache_file = self.store_dir / path.with_name(path.name + ".json")
-        with suppress(FileNotFoundError, NotADirectoryError), cache_file.open() as f:
+        with suppress(FileNotFoundError, NotADirectoryError), cache_file.open(
+            encoding="utf-8"
+        ) as f:
             return cast(Json, json.load(f))
 
     def delete(self, path: Path) -> None:
