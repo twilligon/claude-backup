@@ -3,14 +3,7 @@
 # pyright: reportPrivateUsage=false, reportIncompatibleVariableOverride=false
 
 from asyncio import Task
-from collections.abc import (
-    AsyncGenerator,
-    AsyncIterable,
-    AsyncIterator,
-    Awaitable,
-    Callable,
-    Iterable,
-)
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
 from typing import Any, Generic, TypeVar
@@ -106,22 +99,8 @@ class Channel(Generic[T]):
             self._writers.decr()
 
 
-def asyncify(iterable: Iterable[T] | AsyncIterable[T]) -> AsyncIterator[T]:
-    if isinstance(iterable, AsyncIterable):
-        return aiter(iterable)
-
-    async def agen() -> AsyncGenerator[T, None]:
-        for item in iterable:
-            yield item
-
-    return agen()
-
-
-async def amerge(*iterables: Iterable[T] | AsyncIterable[T]) -> AsyncGenerator[T, None]:
-    pending = {
-        source: asyncio.ensure_future(anext(source))
-        for source in map(asyncify, iterables)
-    }
+async def amerge(*sources: AsyncGenerator[T, None]) -> AsyncGenerator[T, None]:
+    pending = {source: asyncio.ensure_future(anext(source)) for source in sources}
 
     try:
         while pending:
@@ -137,16 +116,14 @@ async def amerge(*iterables: Iterable[T] | AsyncIterable[T]) -> AsyncGenerator[T
     finally:
         await cancel_all(*pending.values())
         for source in pending:
-            if isinstance(source, AsyncGenerator):
-                await source.aclose()
+            await source.aclose()
 
 
 async def as_completed(
-    awaitables: Iterable[Awaitable[T]] | AsyncIterable[Awaitable[T]],
+    source: AsyncGenerator[Awaitable[T], None],
     limit: int,
     delay: float = 0.0,
 ) -> AsyncGenerator[Task[T], None]:
-    source = asyncify(awaitables)
     pending: set[Task[T]] = set()
 
     try:
@@ -176,5 +153,4 @@ async def as_completed(
         await cancel_all(*pending)
         raise
     finally:
-        if isinstance(source, AsyncGenerator):
-            await source.aclose()
+        await source.aclose()
