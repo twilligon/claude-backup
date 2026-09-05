@@ -12,12 +12,6 @@ from .client import Client
 from .store import Account, Asset, Chat, ChatsEntry, Organization, Store
 from .util import Channel, amerge, as_completed
 
-__all__ = (
-    "Syncer",
-    "Fetch",
-)
-
-
 Fetch: TypeAlias = Awaitable[Chat | Asset]
 
 
