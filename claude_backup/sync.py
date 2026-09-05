@@ -9,10 +9,17 @@ from typing import TypeAlias
 import sys
 
 from .client import Client
-from .store import Account, Asset, Chat, ChatsEntry, Organization, Store
+from .store import Account, Asset, Chat, ChatsEntry, Nameable, Organization, Store
 from .util import Channel, amerge, as_completed
 
 Fetch: TypeAlias = Awaitable[Chat | Asset]
+
+
+def rename_cached(old: Nameable, new: Nameable) -> None:
+    if old.slug() != new.slug():
+        kind = type(new).__name__.lower()
+        print(f"Renaming {kind} {old} to {new.name or new.uuid}", file=sys.stderr)
+        new.rename_cached(old)
 
 
 @dataclass(slots=True)
@@ -30,35 +37,17 @@ class Syncer:
             (old for old in Account.load(self) if old.uuid == account.uuid),
             None,
         )
-        if old_account and old_account.store_path() != account.store_path():
-            print(
-                f"Renaming account {old_account} to {account.name or account.uuid}",
-                file=sys.stderr,
-            )
-            self.store.rename(old_account.store_path(), account.store_path())
-            self.store.delete(old_account.store_path())
+        if old_account:
+            rename_cached(old_account, account)
         account.save()
 
         for membership in account.memberships():
             organization = membership.organization()
-            store_path = organization.store_path()
 
-            if (
-                old_account
-                and (old_organization := old_account.organization(organization.uuid))
-                and old_organization.slug() != organization.slug()
+            if old_account and (
+                old_organization := old_account.organization(organization.uuid)
             ):
-                print(
-                    f"Renaming organization {old_organization} to {organization.name or organization.uuid}",
-                    file=sys.stderr,
-                )
-                self.store.rename(
-                    store_path.with_name(old_organization.slug()), store_path
-                )
-                self.store.rename(
-                    store_path.with_name(old_organization.slug() + ".json"),
-                    store_path.with_name(store_path.name + ".json"),
-                )
+                rename_cached(old_organization, organization)
 
             if "chat" not in organization.capabilities:
                 print(

@@ -25,6 +25,12 @@ JSON_ARGS: dict[str, Any] = {
     "separators": (",", ":"),
 }
 
+JSON_SUFFIX = ".json"
+
+
+def json_path(path: Path) -> Path:
+    return path.with_name(path.name + JSON_SUFFIX)
+
 
 T_APIObject = TypeVar("T_APIObject", bound="APIObject")
 
@@ -91,14 +97,14 @@ class Store:
         return cache_file if cache_file.is_file() else None
 
     def load(self, path: Path) -> Json | None:
-        cache_file = self.store_dir / path.with_name(path.name + ".json")
+        cache_file = self.store_dir / path
         with suppress(FileNotFoundError, NotADirectoryError), cache_file.open(
             encoding="utf-8"
         ) as f:
             return cast(Json, json.load(f))
 
     def delete(self, path: Path) -> None:
-        file = self.store_dir / path.with_name(path.name + ".json")
+        file = self.store_dir / path
         with suppress(FileNotFoundError):
             file.unlink()
 
@@ -160,7 +166,7 @@ class APIObject:
         store_path: Path | None = None,
     ) -> T_APIObject | None:
         obj = cls(parent)
-        data = obj.store.load(store_path or obj.store_path())
+        data = obj.store.load(json_path(store_path or obj.store_path()))
         if data is not None:
             return obj.set_data(data)
         else:
@@ -178,16 +184,13 @@ class APIObject:
         return obj.set_data(data).save()
 
     def save(self: T_APIObject) -> T_APIObject:
-        path = self.store_path()
-        with self.store.save(
-            path.with_name(path.name + ".json"), self.get_mtime()
-        ) as f:
+        with self.store.save(json_path(self.store_path()), self.get_mtime()) as f:
             with TextIOWrapper(f, encoding="utf-8") as text:
                 json.dump(self.get_data(), text, **JSON_ARGS)
         return self
 
     def delete_cached(self) -> None:
-        self.store.delete(self.store_path())
+        self.store.delete(json_path(self.store_path()))
 
 
 class Immutable(APIObject):
@@ -226,6 +229,12 @@ class Nameable(APIObject):
         if self.name:
             return f"{self.name.translate(self.FILENAME_XLAT)}-{self.uuid}"
         return self.uuid
+
+    def rename_cached(self, old: "Nameable") -> None:
+        new_path = self.store_path()
+        old_path = new_path.with_name(old.slug())
+        self.store.rename(old_path, new_path)
+        self.store.rename(json_path(old_path), json_path(new_path))
 
     def __str__(self) -> str:
         if self.name:
@@ -607,8 +616,8 @@ class Account(Nameable):
 
     @classmethod
     def load(cls, parent: Parent) -> Iterator["Account"]:
-        for cache_file in parent.store.store_dir.glob("*-*.json"):
-            store_path = Path(cache_file.name.removesuffix(".json"))
+        for cache_file in parent.store.store_dir.glob(f"*-*{JSON_SUFFIX}"):
+            store_path = Path(cache_file.name.removesuffix(JSON_SUFFIX))
             if account := cls._load(parent, store_path=store_path):
                 yield account
 
