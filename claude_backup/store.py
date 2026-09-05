@@ -326,8 +326,8 @@ class File(Timestamped, Nameable):
         return self.chat.chat_list.organization.store_path() / "files" / self.slug()
 
     def assets(self) -> Iterator["Asset"]:
-        for key, data in self._data.items():
-            if key.endswith("_asset"):
+        for key in ("thumbnail_asset", "preview_asset", "document_asset"):
+            if data := self._data.get(key):
                 yield Asset(self).set_data(cast(JsonD, data))
 
 
