@@ -84,19 +84,19 @@ class Store:
         cache_file = self.store_dir / path
         cache_file.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
 
-        with NamedTemporaryFile(
+        f = NamedTemporaryFile(
             "wb",
             prefix=f"{cache_file.name}-",
             dir=cache_file.parent,
             delete=False,
-        ) as f:
-            try:
+        )
+        try:
+            with f:
                 yield f
-                f.close()
-                Path(f.name).rename(cache_file)
-            except BaseException:
-                Path(f.name).unlink(missing_ok=True)
-                raise
+            Path(f.name).replace(cache_file)
+        except BaseException:
+            Path(f.name).unlink(missing_ok=True)
+            raise
 
         if mtime is not None:
             mtime = mtime.timestamp() if isinstance(mtime, datetime) else mtime
