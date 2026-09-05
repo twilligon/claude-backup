@@ -4,7 +4,6 @@
 
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
 from collections.abc import Iterable, Iterator, Sequence
-from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -113,8 +112,10 @@ async def _run(argv: Sequence[str], keys: Iterable[str]) -> None:
 
 
 def run(argv: Sequence[str], keys: Iterable[str]) -> None:
-    with suppress(KeyboardInterrupt):
+    try:
         asyncio.run(_run(argv, keys))
+    except KeyboardInterrupt:
+        sys.exit(130)
 
 
 def main() -> None:
