@@ -177,9 +177,6 @@ class APIObject:
         data = await obj.client.refresh(api_path or obj.api_path())
         return obj.set_data(data).save()
 
-    async def refresh(self: T_APIObject) -> T_APIObject:
-        return self.set_data(await self.client.refresh(self.api_path())).save()
-
     def save(self: T_APIObject) -> T_APIObject:
         path = self.store_path()
         with self.store.save(
@@ -548,15 +545,6 @@ class Chats(APIObject):
         for entry in self.cached_entries():
             if entry not in seen:
                 yield entry
-
-    async def refresh(self) -> "Chats":
-        async for _ in self.entries():
-            pass
-
-        return self
-
-    def __len__(self) -> int:
-        return len(self._data)
 
 
 @final
