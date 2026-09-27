@@ -9,7 +9,6 @@ from .client import Client, Json, JsonD
 from .store import (
     APIObject,
     Account,
-    Attachment,
     Chat,
     Chats,
     ChatsEntry,
@@ -43,7 +42,6 @@ __all__ = (
     "Chats",
     "ChatsEntry",
     "Chat",
-    "Attachment",
     "File",
     "Files",
     "Json",

@@ -287,59 +287,12 @@ class Chat(Timestamped, Nameable):
         return (
             f"{self.chat_list.api_path()}/{self.uuid}"
             + "?tree=True&rendering_mode=messages&render_all_tools=true"
+            + "&return_dangling_human_message=true&include_inline_comparison=true"
             + "&consistency=strong"
         )
 
     def store_path(self) -> Path:
         return self.chat_list.store_path() / "chats" / self.slug()
-
-    def attachments(self) -> Iterator["Attachment"]:
-        for message in cast(list[JsonD], self._data.get("chat_messages") or []):
-            for data in cast(list[JsonD], message.get("attachments") or []):
-                yield Attachment(self).set_data(data)
-
-
-@final
-class Attachment(Timestamped, Nameable):
-    __slots__ = ()
-
-    parent: Chat
-    _data: JsonD
-
-    @property
-    def chat(self) -> Chat:
-        return self.parent
-
-    @property
-    def uuid(self) -> str:
-        return str(UUID(cast(str, self._data["id"])))
-
-    @property
-    def name(self) -> str | None:
-        return cast(str, self._data.get("file_name")) or None
-
-    @property
-    def file_type(self) -> str:
-        return cast(str, self._data["file_type"])
-
-    def get_mtime(self) -> datetime | float | None:
-        return self.created_at
-
-    def store_path(self) -> Path:
-        return (
-            self.chat.chat_list.organization.store_path()
-            / "files"
-            / self.slug()
-            / "contents"
-        )
-
-    def cached(self) -> Path | None:
-        return self.store.find(self.store_path())
-
-    def write(self) -> "Attachment":
-        with self.store.save(self.store_path(), self.get_mtime()) as f:
-            f.write(cast(str, self._data["extracted_content"]).encode())
-        return self
 
 
 @final
@@ -401,19 +354,16 @@ class Files(APIObject):
         return self.organization.store_path() / "files"
 
     def set_data(self, data: Json) -> "Files":
-        # convert list (reverse chronological from API) to dict (forward chronological)
-        files = (File(self).set_data(raw) for raw in reversed(cast(list[JsonD], data)))
+        files = (File(self).set_data(raw) for raw in cast(list[JsonD], data))
         self._data = {file.uuid: file for file in files}
         return self
 
     def get_data(self) -> Json:
-        # convert dict (forward chronological) back to list (reverse chronological)
-        return [file._data for file in reversed(self._data.values())]
+        return [file._data for file in self._data.values()]
 
     async def entries(self) -> AsyncGenerator[File, None]:
-        # files are immutable and listed newest-first, so stop at the first we have
         new: dict[str, File] = {}
-        query = ""
+        query = "?limit=100"
 
         while True:
             response = cast(JsonD, await self.client.refresh(self.api_path() + query))
@@ -426,17 +376,20 @@ class Files(APIObject):
                     break
 
                 new[file.uuid] = file
+                yield file
 
             if done or response["next_cursor"] is None:
                 break
 
-            query = f"?cursor={quote(cast(str, response['next_cursor']), safe='')}"
+            cursor = quote(cast(str, response["next_cursor"]), safe="")
+            query = f"?limit=100&cursor={cursor}"
 
         self._data.update(reversed(new.items()))
         self.save()
 
-        for file in self._data.values():
-            yield file
+        for file in reversed(self._data.values()):
+            if file.uuid not in new:
+                yield file
 
 
 @final
@@ -454,6 +407,7 @@ class ChatsEntry(Timestamped, Nameable, Immutable):
         return (
             f"{self.chat_list.api_path()}/{self.uuid}"
             + "?tree=True&rendering_mode=messages&render_all_tools=true"
+            + "&return_dangling_human_message=true&include_inline_comparison=true"
             + "&consistency=strong"
         )
 
@@ -501,16 +455,12 @@ class Chats(APIObject):
         return self.organization.store_path()
 
     def set_data(self, data: Json) -> "Chats":
-        # convert list (reverse chronological from API) to dict (forward chronological)
-        entries = (
-            ChatsEntry(self).set_data(raw) for raw in reversed(cast(list[JsonD], data))
-        )
+        entries = (ChatsEntry(self).set_data(raw) for raw in cast(list[JsonD], data))
         self._data = {entry.uuid: entry for entry in entries}
         return self
 
     def get_data(self) -> Json:
-        # convert dict (forward chronological) back to list (reverse chronological)
-        return [entry._data for entry in reversed(self._data.values())]
+        return [entry._data for entry in self._data.values()]
 
     def entry(self, uuid: str) -> ChatsEntry | None:
         return self._data.get(uuid)
@@ -527,22 +477,21 @@ class Chats(APIObject):
 
         if not self._data:
             # first fetch: grab everything in one unpaginated request (yes, the
-            # api really does work that way, insanity), then check for mid-sync
-            # changes by fetching the most recent chat, comparing with the sync
+            # api really does work that way, insanity)
             response = cast(
                 JsonD,
                 await self.client.refresh(f"{self.api_path()}_v2?consistency=strong"),
             )
-            self.set_data(response["data"])
+            for raw in reversed(cast(list[JsonD], response["data"])):
+                entry = ChatsEntry(self).set_data(raw)
+                self._data[entry.uuid] = entry
             for entry in self.cached_entries():
                 yield entry
             self.save()
-            offset = 0
-            limit = 1
-        else:
-            offset = 0
-            limit = self.unseen + 1 if self.unseen else page_size
+            return
 
+        offset = 0
+        limit = self.unseen + 1 if self.unseen else page_size
         self.unseen = 0
 
         assert limit
@@ -620,7 +569,9 @@ class Chats(APIObject):
         # chats belong at the "end" w/r/t iteration order. thus we insert items
         # from necessarily reverse-chronological new in reverse so self._data's
         # still entirely in chronological order. this may be a bit galaxy brain
-        self._data.update(reversed(new.items()))
+        for uuid, entry in reversed(new.items()):
+            self._data.pop(uuid, None)
+            self._data[uuid] = entry
         self.save()
 
     async def entries(self) -> AsyncGenerator[ChatsEntry, None]:
