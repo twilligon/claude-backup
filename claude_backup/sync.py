@@ -98,18 +98,18 @@ class Syncer:
             if file.cached() is None:
                 yield file.fetch()
 
-    async def fetch_all(
-        self, fetches: AsyncGenerator[Awaitable[Chat | File], None]
-    ) -> None:
-        async with aclosing(
-            as_completed(fetches, self.connections, self.success_delay)
-        ) as tasks:
-            async for task in tasks:
-                await task
-
-    async def sync_all(self) -> None:
+    async def new_fetches(self) -> AsyncGenerator[Awaitable[Chat | File], None]:
         # chats first: their attachments are written from the chat json, so the
         # file listing then only fetches what isn't already in place
         async for organization in self.get_organizations():
-            await self.fetch_all(self.new_chats(organization))
-            await self.fetch_all(self.new_files(organization))
+            async for fetch in self.new_chats(organization):
+                yield fetch
+            async for fetch in self.new_files(organization):
+                yield fetch
+
+    async def sync_all(self) -> None:
+        async with aclosing(
+            as_completed(self.new_fetches(), self.connections, self.success_delay)
+        ) as tasks:
+            async for task in tasks:
+                await task
