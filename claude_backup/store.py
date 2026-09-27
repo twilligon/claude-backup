@@ -286,6 +286,7 @@ class Chat(Timestamped, Nameable):
         return (
             f"{self.chat_list.api_path()}/{self.uuid}"
             + "?tree=True&rendering_mode=messages&render_all_tools=true"
+            + "&consistency=strong"
         )
 
     def store_path(self) -> Path:
@@ -382,6 +383,7 @@ class ChatsEntry(Timestamped, Nameable, Immutable):
         return (
             f"{self.chat_list.api_path()}/{self.uuid}"
             + "?tree=True&rendering_mode=messages&render_all_tools=true"
+            + "&consistency=strong"
         )
 
     def chat_store_path(self) -> Path:
@@ -456,7 +458,10 @@ class Chats(APIObject):
             # first fetch: grab everything in one unpaginated request (yes, the
             # api really does work that way, insanity), then check for mid-sync
             # changes by fetching the most recent chat, comparing with the sync
-            response = cast(JsonD, await self.client.refresh(f"{self.api_path()}_v2"))
+            response = cast(
+                JsonD,
+                await self.client.refresh(f"{self.api_path()}_v2?consistency=strong"),
+            )
             self.set_data(response["data"])
             for entry in self.cached_entries():
                 yield entry
@@ -476,6 +481,7 @@ class Chats(APIObject):
                 JsonD,
                 await self.client.refresh(
                     f"{self.api_path()}_v2?limit={limit}&offset={offset}"
+                    + "&consistency=strong"
                 ),
             )
             page = cast(list[JsonD], response["data"])
