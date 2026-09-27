@@ -23,7 +23,7 @@ from .store import (
     Store,
     Timestamped,
 )
-from .sync import Fetch, Syncer
+from .sync import Syncer
 
 __all__ = (
     "__version__",
@@ -48,5 +48,4 @@ __all__ = (
     "Files",
     "Json",
     "JsonD",
-    "Fetch",
 )

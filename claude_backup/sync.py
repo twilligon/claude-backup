@@ -5,14 +5,11 @@
 from collections.abc import AsyncGenerator, Awaitable
 from contextlib import aclosing
 from dataclasses import dataclass
-from typing import TypeAlias
 import sys
 
 from .client import Client
 from .store import Account, Chat, ChatsEntry, File, Organization, Store
 from .util import as_completed
-
-Fetch: TypeAlias = Awaitable[Chat | File]
 
 
 @dataclass(slots=True)
@@ -64,7 +61,7 @@ class Syncer:
 
     async def new_chats(
         self, organization: Organization
-    ) -> AsyncGenerator[Fetch, None]:
+    ) -> AsyncGenerator[Awaitable[Chat | File], None]:
         def save_attachments(chat: Chat) -> None:
             # extracted_content is the upload itself for everything but pdfs
             for attachment in chat.attachments():
@@ -96,12 +93,14 @@ class Syncer:
 
     async def new_files(
         self, organization: Organization
-    ) -> AsyncGenerator[Fetch, None]:
+    ) -> AsyncGenerator[Awaitable[Chat | File], None]:
         async for file in organization.file_list().entries():
             if file.cached() is None:
                 yield file.fetch()
 
-    async def fetch_all(self, fetches: AsyncGenerator[Fetch, None]) -> None:
+    async def fetch_all(
+        self, fetches: AsyncGenerator[Awaitable[Chat | File], None]
+    ) -> None:
         async with aclosing(
             as_completed(fetches, self.connections, self.success_delay)
         ) as tasks:
