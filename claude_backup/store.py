@@ -456,7 +456,8 @@ class Chats(APIObject):
             # first fetch: grab everything in one unpaginated request (yes, the
             # api really does work that way, insanity), then check for mid-sync
             # changes by fetching the most recent chat, comparing with the sync
-            self.set_data(await self.client.refresh(self.api_path()))
+            response = cast(JsonD, await self.client.refresh(f"{self.api_path()}_v2"))
+            self.set_data(response["data"])
             for entry in self.cached_entries():
                 yield entry
             self.save()
@@ -471,12 +472,14 @@ class Chats(APIObject):
         assert limit
 
         while True:
-            page = cast(
-                list[JsonD],
+            response = cast(
+                JsonD,
                 await self.client.refresh(
-                    f"{self.api_path()}?limit={limit}&offset={offset}"
+                    f"{self.api_path()}_v2?limit={limit}&offset={offset}"
                 ),
             )
+            page = cast(list[JsonD], response["data"])
+            has_more = cast(bool, response["has_more"])
 
             done = False
             for raw in page:
@@ -527,8 +530,8 @@ class Chats(APIObject):
             # we *ought* to break from this loop by seeing something from prior
             # refreshes, but just in case e.g. all seen entries were deleted on
             # claude.ai (or more likely moved/counted in self.unseen)... we are
-            # also definitely done if they ran out of items for this page
-            if done or len(page) < limit:
+            # also definitely done if they say there are no more items
+            if done or not has_more:
                 break
 
             # if not, double it and give it to the next person
