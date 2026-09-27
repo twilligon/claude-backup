@@ -10,6 +10,7 @@ from io import TextIOWrapper
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import IO, Any, ClassVar, Protocol, TypeVar, cast, final
+from urllib.parse import quote
 from uuid import UUID
 import json
 import os
@@ -292,18 +293,14 @@ class Chat(Timestamped, Nameable):
     def store_path(self) -> Path:
         return self.chat_list.store_path() / "chats" / self.slug()
 
-    def files(self) -> Iterator["File"]:
-        seen: set[str] = set()
+    def attachments(self) -> Iterator["Attachment"]:
         for message in cast(list[JsonD], self._data.get("chat_messages") or []):
-            for data in cast(list[JsonD], message.get("files") or []):
-                file = File(self).set_data(data)
-                if file.uuid not in seen:
-                    seen.add(file.uuid)
-                    yield file
+            for data in cast(list[JsonD], message.get("attachments") or []):
+                yield Attachment(self).set_data(data)
 
 
 @final
-class File(Timestamped, Nameable):
+class Attachment(Timestamped, Nameable):
     __slots__ = ()
 
     parent: Chat
@@ -314,58 +311,132 @@ class File(Timestamped, Nameable):
         return self.parent
 
     @property
+    def uuid(self) -> str:
+        return str(UUID(cast(str, self._data["id"])))
+
+    @property
     def name(self) -> str | None:
         return cast(str, self._data.get("file_name")) or None
 
-    def get_mtime(self) -> datetime | float | None:
-        return self.updated_at or self.created_at
-
-    def api_path(self) -> str:
-        return f"{self.chat.chat_list.organization.uuid}/files/{self.uuid}"
-
-    def store_path(self) -> Path:
-        return self.chat.chat_list.organization.store_path() / "files" / self.slug()
-
-    def assets(self) -> Iterator["Asset"]:
-        for key in ("thumbnail_asset", "preview_asset", "document_asset"):
-            if data := self._data.get(key):
-                yield Asset(self).set_data(cast(JsonD, data))
-
-
-@final
-class Asset(APIObject):
-    __slots__ = ()
-
-    parent: File
-    _data: JsonD
-
     @property
-    def file(self) -> File:
-        return self.parent
-
-    @property
-    def variant(self) -> str:
-        return cast(str, self._data["url"]).rsplit("/", 1)[-1]
-
-    def __str__(self) -> str:
-        return f"{self.variant} of {self.file}"
+    def file_type(self) -> str:
+        return cast(str, self._data["file_type"])
 
     def get_mtime(self) -> datetime | float | None:
-        return self.file.get_mtime()
-
-    def api_path(self) -> str:
-        return f"{self.file.api_path()}/{self.variant}"
+        return self.created_at
 
     def store_path(self) -> Path:
-        return self.file.store_path() / self.variant
+        return (
+            self.chat.chat_list.organization.store_path()
+            / "files"
+            / self.slug()
+            / "contents"
+        )
 
     def cached(self) -> Path | None:
         return self.store.find(self.store_path())
 
-    async def fetch(self) -> "Asset":
+    def write(self) -> "Attachment":
+        with self.store.save(self.store_path(), self.get_mtime()) as f:
+            f.write(cast(str, self._data["extracted_content"]).encode())
+        return self
+
+
+@final
+class File(Timestamped, Nameable):
+    __slots__ = ()
+
+    parent: "Files"
+    _data: JsonD
+
+    @property
+    def file_list(self) -> "Files":
+        return self.parent
+
+    @property
+    def uuid(self) -> str:
+        return str(UUID(cast(str, self._data["file_uuid"])))
+
+    @property
+    def name(self) -> str | None:
+        return cast(str, self._data.get("file_name")) or None
+
+    def get_mtime(self) -> datetime | float | None:
+        return self.created_at
+
+    def api_path(self) -> str:
+        return f"{self.file_list.organization.api_path()}/files/{self.uuid}/contents"
+
+    def store_path(self) -> Path:
+        return self.file_list.store_path() / self.slug() / "contents"
+
+    def cached(self) -> Path | None:
+        return self.store.find(self.store_path())
+
+    async def fetch(self) -> "File":
         with self.store.save(self.store_path(), self.get_mtime()) as f:
             await self.client.download(self.api_path(), f)
         return self
+
+
+@final
+class Files(APIObject):
+    __slots__ = ()
+
+    parent: "Organization"
+    _data: dict[str, File]
+
+    def __init__(self, parent: "Organization"):
+        super().__init__(parent)
+        self._data = {}
+
+    @property
+    def organization(self) -> "Organization":
+        return self.parent
+
+    def api_path(self) -> str:
+        return f"{self.organization.api_path()}/account/files"
+
+    def store_path(self) -> Path:
+        return self.organization.store_path() / "files"
+
+    def set_data(self, data: Json) -> "Files":
+        # convert list (reverse chronological from API) to dict (forward chronological)
+        files = (File(self).set_data(raw) for raw in reversed(cast(list[JsonD], data)))
+        self._data = {file.uuid: file for file in files}
+        return self
+
+    def get_data(self) -> Json:
+        # convert dict (forward chronological) back to list (reverse chronological)
+        return [file._data for file in reversed(self._data.values())]
+
+    async def entries(self) -> AsyncGenerator[File, None]:
+        # files are immutable and listed newest-first, so stop at the first we have
+        new: dict[str, File] = {}
+        query = ""
+
+        while True:
+            response = cast(JsonD, await self.client.refresh(self.api_path() + query))
+
+            done = False
+            for raw in cast(list[JsonD], response["files"]):
+                file = File(self).set_data(raw)
+                if file.uuid in self._data:
+                    done = True
+                    break
+
+                new[file.uuid] = file
+
+            if done or response["next_cursor"] is None:
+                break
+
+            query = f"?cursor={quote(cast(str, response['next_cursor']), safe='')}"
+
+        self._data.update(reversed(new.items()))
+        self.save()
+
+        for file in self._data.values():
+            yield file
 
 
 @final
@@ -588,6 +659,9 @@ class Organization(Nameable):
 
     def chat_list(self) -> Chats:
         return Chats._load(self) or Chats(self)
+
+    def file_list(self) -> Files:
+        return Files._load(self) or Files(self)
 
 
 @final

@@ -3,18 +3,11 @@
 # pyright: reportPrivateUsage=false, reportIncompatibleVariableOverride=false
 
 from asyncio import Task
-from collections.abc import AsyncGenerator, Awaitable, Callable
-from contextlib import asynccontextmanager, suppress
-from dataclasses import dataclass, field
-from typing import Any, Generic, TypeVar
+from collections.abc import AsyncGenerator, Awaitable
+from typing import Any, TypeVar
 import asyncio
 
 T = TypeVar("T")
-U = TypeVar("U")
-
-
-class Hangup(Exception):
-    pass
 
 
 async def cancel_all(*futures: "asyncio.Future[Any]") -> None:
@@ -39,84 +32,6 @@ async def cancel_all(*futures: "asyncio.Future[Any]") -> None:
 
         if not future.cancelled():
             future.exception()
-
-
-@dataclass(slots=True)
-class Channel(Generic[T]):
-    @dataclass(slots=True)
-    class Refcount:
-        _count: int = 0
-        _gone: asyncio.Event = field(default_factory=asyncio.Event)
-
-        def incr(self) -> None:
-            self._count += 1
-            self._gone.clear()
-
-        def decr(self) -> None:
-            self._count -= 1
-            if not self._count:
-                self._gone.set()
-
-    _queue: asyncio.Queue[T] = field(default_factory=asyncio.Queue)
-    _readers: Refcount = field(default_factory=Refcount)
-    _writers: Refcount = field(default_factory=Refcount)
-
-    async def _race(self, awaitable: Awaitable[U], against: Refcount) -> U:
-        task = asyncio.ensure_future(awaitable)
-        waiter = asyncio.ensure_future(against._gone.wait())
-        try:
-            await asyncio.wait({task, waiter}, return_when=asyncio.FIRST_COMPLETED)
-            if task.done():
-                return task.result()
-            raise Hangup
-        finally:
-            await cancel_all(task, waiter)
-
-    @asynccontextmanager
-    async def reader(self) -> AsyncGenerator[AsyncGenerator[T, None], None]:
-        async def reads() -> AsyncGenerator[T, None]:
-            with suppress(Hangup):
-                while True:
-                    yield await self._race(self._queue.get(), self._writers)
-
-        self._readers.incr()
-        try:
-            yield reads()
-        finally:
-            self._readers.decr()
-
-    @asynccontextmanager
-    async def writer(self) -> AsyncGenerator[Callable[[T], Awaitable[None]], None]:
-        async def put(item: T) -> None:
-            if self._readers._gone.is_set():
-                raise Hangup
-            await self._race(self._queue.put(item), self._readers)
-
-        self._writers.incr()
-        try:
-            yield put
-        finally:
-            self._writers.decr()
-
-
-async def amerge(*sources: AsyncGenerator[T, None]) -> AsyncGenerator[T, None]:
-    pending = {source: asyncio.ensure_future(anext(source)) for source in sources}
-
-    try:
-        while pending:
-            await asyncio.wait(pending.values(), return_when=asyncio.FIRST_COMPLETED)
-
-            source = next(source for source, task in pending.items() if task.done())
-            try:
-                yield pending[source].result()
-            except StopAsyncIteration:
-                del pending[source]
-            else:
-                pending[source] = asyncio.ensure_future(anext(source))
-    finally:
-        await cancel_all(*pending.values())
-        for source in pending:
-            await source.aclose()
 
 
 async def as_completed(
