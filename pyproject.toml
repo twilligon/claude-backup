@@ -30,7 +30,7 @@ classifiers = [
 dynamic = ["version", "description"]
 
 [project.scripts]
-claude-backup = "claude_backup.cli:main"
+claude-backup = "claude_backup:main"
 
 [project.urls]
 Repository = "https://github.com/twilligon/claude-backup"
