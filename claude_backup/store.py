@@ -321,7 +321,7 @@ class File(Timestamped, Nameable):
         return f"{self.file_list.organization.api_path()}/files/{self.uuid}/contents"
 
     def store_path(self) -> Path:
-        return self.file_list.store_path() / self.slug() / "contents"
+        return self.file_list.store_path() / self.slug()
 
     def cached(self) -> Path | None:
         return self.store.find(self.store_path())
@@ -337,7 +337,7 @@ class Files(APIObject):
     __slots__ = ()
 
     parent: "Organization"
-    _data: dict[str, File]
+    _data: JsonD
 
     def __init__(self, parent: "Organization"):
         super().__init__(parent)
@@ -352,14 +352,6 @@ class Files(APIObject):
 
     def store_path(self) -> Path:
         return self.organization.store_path() / "files"
-
-    def set_data(self, data: Json) -> "Files":
-        files = (File(self).set_data(raw) for raw in cast(list[JsonD], data))
-        self._data = {file.uuid: file for file in files}
-        return self
-
-    def get_data(self) -> Json:
-        return [file._data for file in self._data.values()]
 
     async def entries(self) -> AsyncGenerator[File, None]:
         new: dict[str, File] = {}
@@ -384,12 +376,13 @@ class Files(APIObject):
             cursor = quote(cast(str, response["next_cursor"]), safe="")
             query = f"?limit=100&cursor={cursor}"
 
-        self._data.update(reversed(new.items()))
+        for uuid, file in reversed(new.items()):
+            self._data[uuid] = file._data
         self.save()
 
-        for file in reversed(self._data.values()):
-            if file.uuid not in new:
-                yield file
+        for uuid, raw in reversed(self._data.items()):
+            if uuid not in new:
+                yield File(self).set_data(raw)
 
 
 @final
@@ -436,7 +429,7 @@ class Chats(APIObject):
     __slots__ = ("unseen",)
 
     parent: "Organization"
-    _data: dict[str, ChatsEntry]
+    _data: JsonD
     unseen: int
 
     def __init__(self, parent: "Organization"):
@@ -455,19 +448,22 @@ class Chats(APIObject):
         return self.organization.store_path()
 
     def set_data(self, data: Json) -> "Chats":
-        entries = (ChatsEntry(self).set_data(raw) for raw in cast(list[JsonD], data))
-        self._data = {entry.uuid: entry for entry in entries}
-        return self
-
-    def get_data(self) -> Json:
-        return [entry._data for entry in self._data.values()]
+        if isinstance(data, list):
+            data = {
+                ChatsEntry(self).set_data(raw).uuid: raw
+                for raw in reversed(cast(list[JsonD], data))
+            }
+        return super().set_data(data)
 
     def entry(self, uuid: str) -> ChatsEntry | None:
-        return self._data.get(uuid)
+        if (raw := self._data.get(uuid)) is not None:
+            return ChatsEntry(self).set_data(raw)
+        return None
 
     def cached_entries(self) -> Iterator[ChatsEntry]:
         # yield in reverse chronological order (newest first)
-        yield from reversed(self._data.values())
+        for raw in reversed(self._data.values()):
+            yield ChatsEntry(self).set_data(raw)
 
     async def new_entries(
         self, page_size: int = 20
@@ -483,8 +479,7 @@ class Chats(APIObject):
                 await self.client.refresh(f"{self.api_path()}_v2?consistency=strong"),
             )
             for raw in reversed(cast(list[JsonD], response["data"])):
-                entry = ChatsEntry(self).set_data(raw)
-                self._data[entry.uuid] = entry
+                self._data[ChatsEntry(self).set_data(raw).uuid] = raw
             for entry in self.cached_entries():
                 yield entry
             self.save()
@@ -544,7 +539,7 @@ class Chats(APIObject):
                         continue
                 elif (
                     stored := self._data.get(uuid)
-                ) and entry.updated_at == stored.updated_at:
+                ) and entry.updated_at == ChatsEntry(self).set_data(stored).updated_at:
                     # entry was in a chronological list of ones we already had,
                     # so we must also have all entries before it, so we're done
                     done = True
@@ -571,7 +566,7 @@ class Chats(APIObject):
         # still entirely in chronological order. this may be a bit galaxy brain
         for uuid, entry in reversed(new.items()):
             self._data.pop(uuid, None)
-            self._data[uuid] = entry
+            self._data[uuid] = entry._data
         self.save()
 
     async def entries(self) -> AsyncGenerator[ChatsEntry, None]:
