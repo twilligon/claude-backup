@@ -618,6 +618,7 @@ class Chats(APIObject):
         offset = 0
         limit = self.unseen + 1 if self.unseen else page_size
         self.unseen = 0
+        last: Json = None
 
         assert limit > 0
 
@@ -628,6 +629,18 @@ class Chats(APIObject):
             )
             page = cast(list[dict[str, Json]], response["data"])
             has_more = cast(bool, response["has_more"])
+
+            if last is not None:
+                for raw in page:
+                    if raw["uuid"] == last:
+                        break
+
+                    self.unseen += 1
+                else:
+                    offset = 0
+                    last = None
+                    self.unseen = 0
+                    continue
 
             done = False
             for raw in page:
@@ -650,7 +663,6 @@ class Chats(APIObject):
                     # would expect at offsets 0 through N on our next fetch! so
                     # update self.unseen as a hint to the next new_entries call
                     # that there are likely exactly self.unseen new or changed.
-                    self.unseen += 1
 
                     # ...but if the above hypothesis is wrong for some perverse
                     # reason like all the chats up until now being rewritten in
@@ -685,7 +697,9 @@ class Chats(APIObject):
                 break
 
             # if not, double it and give it to the next person
-            offset += limit
+            if page:
+                offset += len(page) - 1
+                last = page[-1]["uuid"]
             limit *= 2
 
         # dicts preserve order, but because there is no dict.prepend(), we need
