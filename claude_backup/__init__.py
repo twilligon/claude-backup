@@ -2,7 +2,6 @@
 
 # pyright: reportAny=false, reportExplicitAny=false
 # pyright: reportImplicitOverride=false, reportUnusedCallResult=false
-# pyright: reportPrivateUsage=false, reportIncompatibleVariableOverride=false
 
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
 from asyncio import Task
@@ -171,7 +170,7 @@ class Store:
     store_dir: Path = field(init=False)
 
     def __post_init__(self) -> None:
-        self.store_dir = self.backup_dir / __version__
+        self.store_dir = self.backup_dir / "0.1.13"
         self.backup_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
 
         version_file = self.backup_dir / "version"
@@ -251,21 +250,19 @@ class Store:
 
 
 class APIObject:
-    __slots__: tuple[str, ...] = ("parent", "_data")
+    __slots__: tuple[str, ...] = ("_data",)
 
-    parent: "APIObject | Syncer"
+    _client: Client  # pyright: ignore[reportUninitializedInstanceVariable]
+    _store: Store  # pyright: ignore[reportUninitializedInstanceVariable]
     _data: dict[str, Json]  # pyright: ignore[reportUninitializedInstanceVariable]
-
-    def __init__(self, parent: "APIObject | Syncer") -> None:
-        self.parent = parent
 
     @property
     def client(self) -> Client:
-        return self.parent.client
+        return self._client
 
     @property
     def store(self) -> Store:
-        return self.parent.store
+        return self._store
 
     def get_data(self) -> dict[str, Json]:
         return self._data
@@ -286,11 +283,10 @@ class APIObject:
     @classmethod
     def _load(
         cls: type[T_APIObject],
-        parent: "APIObject | Syncer",
-        *,
+        *args: Any,
         store_path: Path | None = None,
     ) -> T_APIObject | None:
-        obj = cls(parent)
+        obj = cls(*args)
         path = store_path or obj.store_path()
         data = obj.store.load(path.with_name(path.name + ".json"))
         if data is not None:
@@ -301,11 +297,10 @@ class APIObject:
     @classmethod
     async def _fetch(
         cls: type[T_APIObject],
-        parent: "APIObject | Syncer",
-        *,
+        *args: Any,
         api_path: str | None = None,
     ) -> T_APIObject:
-        obj = cls(parent)
+        obj = cls(*args)
         data = await obj.client.refresh(api_path or obj.api_path())
         return obj.set_data(data).save()
 
@@ -330,11 +325,9 @@ class Immutable(APIObject):
         return hash(json.dumps(self._data, sort_keys=True, **JSON_ARGS))
 
     def __eq__(self, other: object) -> bool:
-        if type(self) is type(other):
-            assert isinstance(other, APIObject)  # appease pyright
+        if isinstance(other, type(self)):
             return self._data == other._data
-        else:
-            return NotImplemented
+        return NotImplemented
 
 
 class Nameable(APIObject):
@@ -393,27 +386,49 @@ class Timestamped(APIObject):
 
 @final
 class Chat(Timestamped, Nameable):
-    __slots__ = ()
+    __slots__ = ("chat_list",)
 
-    parent: "Chats"
+    chat_list: "Chats"
+
+    def __init__(self, chat_list: "Chats"):
+        self.chat_list = chat_list
+
+    @property
+    def client(self) -> Client:
+        return self.chat_list.client
+
+    @property
+    def store(self) -> Store:
+        return self.chat_list.store
 
     def api_path(self) -> str:
         return (
-            f"{self.parent.api_path()}/{self.uuid}"
+            f"{self.chat_list.api_path()}/{self.uuid}"
             + "?tree=True&rendering_mode=messages&render_all_tools=true"
             + "&return_dangling_human_message=true&include_inline_comparison=true"
             + "&consistency=strong"
         )
 
     def store_path(self) -> Path:
-        return self.parent.store_path() / self.slug()
+        return self.chat_list.store_path() / self.slug()
 
 
 @final
 class File(Timestamped, Nameable):
-    __slots__ = ()
+    __slots__ = ("file_list",)
 
-    parent: "Files"
+    file_list: "Files"
+
+    def __init__(self, file_list: "Files"):
+        self.file_list = file_list
+
+    @property
+    def client(self) -> Client:
+        return self.file_list.client
+
+    @property
+    def store(self) -> Store:
+        return self.file_list.store
 
     @property
     def uuid(self) -> str:
@@ -427,10 +442,10 @@ class File(Timestamped, Nameable):
         return self.created_at
 
     def api_path(self) -> str:
-        return f"{self.parent.parent.api_path()}/files/{self.uuid}/contents"
+        return f"{self.file_list.organization.api_path()}/files/{self.uuid}/contents"
 
     def store_path(self) -> Path:
-        return self.parent.store_path() / self.slug()
+        return self.file_list.store_path() / self.slug()
 
     async def fetch(self) -> "File":
         with self.store.save(self.store_path(), self.get_mtime()) as f:
@@ -440,19 +455,27 @@ class File(Timestamped, Nameable):
 
 @final
 class Files(APIObject):
-    __slots__ = ()
+    __slots__ = ("organization",)
 
-    parent: "Organization"
+    organization: "Organization"
 
-    def __init__(self, parent: "Organization"):
-        super().__init__(parent)
+    def __init__(self, organization: "Organization"):
+        self.organization = organization
         self._data = {}
 
+    @property
+    def client(self) -> Client:
+        return self.organization.client
+
+    @property
+    def store(self) -> Store:
+        return self.organization.store
+
     def api_path(self) -> str:
-        return f"{self.parent.api_path()}/account/files"
+        return f"{self.organization.api_path()}/account/files"
 
     def store_path(self) -> Path:
-        return self.parent.store_path() / "files"
+        return self.organization.store_path() / "files"
 
     async def entries(self) -> AsyncGenerator[File, None]:
         new: dict[str, File] = {}
@@ -488,26 +511,37 @@ class Files(APIObject):
 
 @final
 class ChatsEntry(Timestamped, Nameable, Immutable):
-    __slots__ = ()
+    __slots__ = ("chat_list",)
 
-    parent: "Chats"
+    chat_list: "Chats"
+
+    def __init__(self, chat_list: "Chats"):
+        self.chat_list = chat_list
+
+    @property
+    def client(self) -> Client:
+        return self.chat_list.client
+
+    @property
+    def store(self) -> Store:
+        return self.chat_list.store
 
     def chat_api_path(self) -> str:
         return (
-            f"{self.parent.api_path()}/{self.uuid}"
+            f"{self.chat_list.api_path()}/{self.uuid}"
             + "?tree=True&rendering_mode=messages&render_all_tools=true"
             + "&return_dangling_human_message=true&include_inline_comparison=true"
             + "&consistency=strong"
         )
 
     def chat_store_path(self) -> Path:
-        return self.parent.store_path() / self.slug()
+        return self.chat_list.store_path() / self.slug()
 
     def load_chat(self) -> Chat | None:
-        return Chat._load(self.parent, store_path=self.chat_store_path())
+        return Chat._load(self.chat_list, store_path=self.chat_store_path())
 
     async def fetch_chat(self) -> Chat:
-        return await Chat._fetch(self.parent, api_path=self.chat_api_path())
+        return await Chat._fetch(self.chat_list, api_path=self.chat_api_path())
 
     def print(self) -> None:
         name = self.name or ""
@@ -522,21 +556,29 @@ class ChatsEntry(Timestamped, Nameable, Immutable):
 
 @final
 class Chats(APIObject):
-    __slots__ = ("unseen",)
+    __slots__ = ("organization", "unseen")
 
-    parent: "Organization"
+    organization: "Organization"
     unseen: int
 
-    def __init__(self, parent: "Organization"):
-        super().__init__(parent)
+    def __init__(self, organization: "Organization"):
+        self.organization = organization
         self.unseen = 0
         self._data = {}
 
+    @property
+    def client(self) -> Client:
+        return self.organization.client
+
+    @property
+    def store(self) -> Store:
+        return self.organization.store
+
     def api_path(self) -> str:
-        return f"{self.parent.api_path()}/chat_conversations"
+        return f"{self.organization.api_path()}/chat_conversations"
 
     def store_path(self) -> Path:
-        return self.parent.store_path() / "chats"
+        return self.organization.store_path() / "chats"
 
     def entry(self, uuid: str) -> ChatsEntry | None:
         if (raw := self._data.get(uuid)) is not None:
@@ -558,14 +600,14 @@ class Chats(APIObject):
             # first fetch: grab everything in one unpaginated request (yes, the
             # api really does work that way, insanity)
             response = await self.client.refresh(
-                f"{self.parent.api_path()}/chat_conversations_v2?consistency=strong"
+                f"{self.organization.api_path()}/chat_conversations_v2?consistency=strong"
             )
             for raw in reversed(cast(list[dict[str, Json]], response["data"])):
                 self._data[ChatsEntry(self).set_data(raw).uuid] = raw
             for entry in self.cached_entries():
                 yield entry
             self.save()
-            old_path = self.parent.store_path()
+            old_path = self.organization.store_path()
             self.store.delete(old_path.with_name(old_path.name + ".json"))
             return
 
@@ -577,7 +619,7 @@ class Chats(APIObject):
 
         while True:
             response = await self.client.refresh(
-                f"{self.parent.api_path()}/chat_conversations_v2"
+                f"{self.organization.api_path()}/chat_conversations_v2"
                 + f"?limit={limit}&offset={offset}&consistency=strong"
             )
             page = cast(list[dict[str, Json]], response["data"])
@@ -667,15 +709,26 @@ class Chats(APIObject):
 
 @final
 class Organization(Nameable):
-    __slots__ = ()
+    __slots__ = ("account",)
 
-    parent: "Account"
+    account: "Account"
+
+    def __init__(self, account: "Account"):
+        self.account = account
+
+    @property
+    def client(self) -> Client:
+        return self.account.client
+
+    @property
+    def store(self) -> Store:
+        return self.account.store
 
     def api_path(self) -> str:
         return f"organizations/{self.uuid}"
 
     def store_path(self) -> Path:
-        return Path(self.parent.slug()) / self.slug()
+        return Path(self.account.slug()) / self.slug()
 
     @property
     def capabilities(self) -> list[str]:
@@ -690,19 +743,37 @@ class Organization(Nameable):
 
 @final
 class Membership(Immutable):
-    __slots__ = ()
+    __slots__ = ("account",)
 
-    parent: "Account"
+    account: "Account"
+
+    def __init__(self, account: "Account"):
+        self.account = account
+
+    @property
+    def client(self) -> Client:
+        return self.account.client
+
+    @property
+    def store(self) -> Store:
+        return self.account.store
 
     def organization(self) -> Organization:
-        return Organization(self.parent).set_data(
+        return Organization(self.account).set_data(
             cast(dict[str, Json], self._data["organization"])
         )
 
 
 @final
 class Account(Nameable):
-    __slots__ = ()
+    __slots__ = ("_client", "_store")
+
+    _client: Client
+    _store: Store
+
+    def __init__(self, client: Client, store: Store):
+        self._client = client
+        self._store = store
 
     @property
     def name(self) -> str | None:
@@ -715,10 +786,10 @@ class Account(Nameable):
         return Path(self.slug())
 
     @classmethod
-    def load(cls, parent: "Syncer") -> Iterator["Account"]:
-        for cache_file in parent.store.store_dir.glob("*-*.json"):
+    def load(cls, client: Client, store: Store) -> Iterator["Account"]:
+        for cache_file in store.store_dir.glob("*-*.json"):
             store_path = Path(cache_file.name.removesuffix(".json"))
-            if account := cls._load(parent, store_path=store_path):
+            if account := cls._load(client, store, store_path=store_path):
                 yield account
 
     def memberships(self) -> Iterator[Membership]:
@@ -784,11 +855,15 @@ class Syncer:
     success_delay: float = 0.25
 
     async def get_organizations(self) -> AsyncGenerator[Organization]:
-        account = Account(self)
+        account = Account(self.client, self.store)
         account.set_data(await self.client.refresh(account.api_path()))
 
         old_account = next(
-            (old for old in Account.load(self) if old.uuid == account.uuid),
+            (
+                old
+                for old in Account.load(self.client, self.store)
+                if old.uuid == account.uuid
+            ),
             None,
         )
         if old_account and old_account.slug() != account.slug():
@@ -849,7 +924,7 @@ class Syncer:
                 # we must get old_entry *now* and not in the async function in
                 # fetch_new_chat, since Chats.new_entries might finish and save
                 # the new entry over old_entry!
-                old_entry = entry.parent.entry(entry.uuid)
+                old_entry = entry.chat_list.entry(entry.uuid)
                 old_chat = old_entry.load_chat() if old_entry else None
                 if old_chat and old_chat.updated_at == entry.updated_at:
                     continue
