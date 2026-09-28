@@ -136,15 +136,20 @@ class Client:
                 await self._download(path, sink)
                 return
             except Exception as e:
+                if isinstance(e, ClientResponseError) and e.status == 404:
+                    raise
+
                 sink.seek(0)
                 sink.truncate()
+
                 print(
                     f"Error fetching {path} (try {retry+1} of {self.retries}, "
-                    + f"waiting {retry_delay:.1f}s): {e}",
+                    + f"waiting {retry_delay:g}s): {e}",
                     file=sys.stderr,
                 )
-                await asyncio.sleep(retry_delay)
-                retry_delay = min(retry_delay * 2, self.max_retry_delay)
+
+            await asyncio.sleep(retry_delay)
+            retry_delay = min(retry_delay * 2, self.max_retry_delay)
 
         await self._download(path, sink)
 
@@ -459,7 +464,17 @@ class File(Timestamped, Nameable):
 
     async def fetch(self) -> "File":
         with self.store.save(self.store_path(), self.get_mtime()) as f:
-            await self.client.download(self.api_path(), f)
+            try:
+                await self.client.download(self.api_path(), f)
+            except ClientResponseError as e:
+                if e.status == 404:
+                    # TODO: slightly jank
+                    await self.client.download(
+                        f"{self.file_list.organization.uuid}/files/{self.uuid}/preview",
+                        f,
+                    )
+                else:
+                    raise
         return self
 
 
