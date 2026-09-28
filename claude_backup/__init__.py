@@ -40,7 +40,7 @@ from aiohttp import (
 )
 from yarl import URL
 
-__version__ = "0.1.13"
+__version__ = "0.1.14"
 
 __all__ = (
     "__version__",
