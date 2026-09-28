@@ -356,6 +356,16 @@ class Nameable(APIObject):
             return f"{self.name} ({self.uuid})"
         return self.uuid
 
+    def print(self) -> None:
+        name = self.name or ""
+
+        if sys.stdout.isatty():
+            max_len = shutil.get_terminal_size().columns - 36 - 4
+            if len(name) > max_len:
+                name = name[: max_len - 1] + "…"
+
+        print(f"{self.uuid}\t{name}")
+
 
 class Timestamped(APIObject):
     __slots__: tuple[str, ...] = ()
@@ -542,16 +552,6 @@ class ChatsEntry(Timestamped, Nameable, Immutable):
 
     async def fetch_chat(self) -> Chat:
         return await Chat._fetch(self.chat_list, api_path=self.chat_api_path())
-
-    def print(self) -> None:
-        name = self.name or ""
-
-        if sys.stdout.isatty():
-            max_len = shutil.get_terminal_size().columns - 36 - 4
-            if len(name) > max_len:
-                name = name[: max_len - 1] + "…"
-
-        print(f"{self.uuid}\t{name}")
 
 
 @final
@@ -934,6 +934,7 @@ class Syncer:
 
             async for file in organization.file_list().entries():
                 if self.store.find(file.store_path()) is None:
+                    file.print()
                     yield file.fetch()
 
     async def sync_all(self) -> None:
