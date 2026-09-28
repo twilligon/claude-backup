@@ -203,7 +203,7 @@ class Store:
 
     @contextmanager
     def save(
-        self, path: Path, mtime: datetime | float | None = None
+        self, path: Path, mtime: datetime | None = None
     ) -> Generator[IO[bytes], None, None]:
         cache_file = self.store_dir / path
         cache_file.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -225,12 +225,7 @@ class Store:
             raise
 
         if mtime is not None:
-            mtime = mtime.timestamp() if isinstance(mtime, datetime) else mtime
-            os.utime(cache_file, (mtime, mtime))
-
-    def find(self, path: Path) -> Path | None:
-        cache_file = self.store_dir / path
-        return cache_file if cache_file.is_file() else None
+            os.utime(cache_file, (mtime.timestamp(), mtime.timestamp()))
 
     def load(self, path: Path) -> dict[str, Json] | None:
         cache_file = self.store_dir / path
@@ -272,7 +267,7 @@ class APIObject:
     def get_data(self) -> dict[str, Json]:
         return self._data
 
-    def get_mtime(self) -> datetime | float | None:
+    def get_mtime(self) -> datetime | None:
         return None
 
     def set_data(self: T_APIObject, data: dict[str, Json]) -> T_APIObject:
@@ -376,26 +371,20 @@ class Timestamped(APIObject):
     __slots__: tuple[str, ...] = ()
 
     @property
-    def created_at(self) -> datetime | None:
-        try:
-            # the .replace("Z", ...) is for Python <3.11, which doesn't accept
-            # the trailing-Z form fromisoformat() that claude.ai uses
-            return datetime.fromisoformat(
-                cast(str, self._data["created_at"]).replace("Z", "+00:00")
-            )
-        except (KeyError, TypeError, ValueError):
-            return None
+    def created_at(self) -> datetime:
+        # the .replace("Z", ...) is for Python <3.11, which doesn't accept
+        # the trailing-Z form fromisoformat() that claude.ai uses
+        return datetime.fromisoformat(
+            cast(str, self._data["created_at"]).replace("Z", "+00:00")
+        )
 
     @property
-    def updated_at(self) -> datetime | None:
-        try:
-            return datetime.fromisoformat(
-                cast(str, self._data["updated_at"]).replace("Z", "+00:00")
-            )
-        except (KeyError, TypeError, ValueError):
-            return None
+    def updated_at(self) -> datetime:
+        return datetime.fromisoformat(
+            cast(str, self._data["updated_at"]).replace("Z", "+00:00")
+        )
 
-    def get_mtime(self) -> datetime | float | None:
+    def get_mtime(self) -> datetime:
         return self.updated_at
 
 
@@ -453,7 +442,7 @@ class File(Timestamped, Nameable):
     def name(self) -> str | None:
         return cast(str, self._data.get("file_name")) or None
 
-    def get_mtime(self) -> datetime | float | None:
+    def get_mtime(self) -> datetime:
         return self.created_at
 
     def api_path(self) -> str:
@@ -606,7 +595,7 @@ class Chats(APIObject):
             yield ChatsEntry(self).set_data(cast(dict[str, Json], raw))
 
     async def new_entries(
-        self, page_size: int = 20
+        self, page_size: int = 30
     ) -> AsyncGenerator[ChatsEntry, None]:
         # "sliding window" sync (chat_conversations is recently-modified-first)
         new: dict[str, ChatsEntry] = {}
@@ -630,7 +619,7 @@ class Chats(APIObject):
         limit = self.unseen + 1 if self.unseen else page_size
         self.unseen = 0
 
-        assert limit
+        assert limit > 0
 
         while True:
             response = await self.client.refresh(
@@ -910,10 +899,7 @@ class Syncer:
                 new_path = organization.store_path()
                 old_path = new_path.with_name(old_organization.slug())
                 self.store.rename(old_path, new_path)
-                self.store.rename(
-                    old_path.with_name(old_path.name + ".json"),
-                    new_path.with_name(new_path.name + ".json"),
-                )
+                self.store.delete(old_path.with_name(old_path.name + ".json"))
 
             if "chat" not in organization.capabilities:
                 print(
@@ -948,7 +934,7 @@ class Syncer:
                 yield fetch_new_chat(entry, old_chat)
 
             async for file in organization.file_list().entries():
-                if self.store.find(file.store_path()) is None:
+                if not (self.store.store_dir / file.store_path()).is_file():
                     file.print()
                     yield file.fetch()
 
@@ -1050,10 +1036,7 @@ async def _run(argv: Sequence[str], keys: Iterable[str]) -> None:
 
 
 def run(argv: Sequence[str], keys: Iterable[str]) -> None:
-    try:
-        asyncio.run(_run(argv, keys))
-    except KeyboardInterrupt:
-        sys.exit(130)
+    asyncio.run(_run(argv, keys))
 
 
 def main() -> None:
