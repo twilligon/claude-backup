@@ -84,6 +84,8 @@ class Store:
         try:
             with f:
                 yield f
+            if cache_file.is_dir():
+                shutil.rmtree(cache_file)
             Path(f.name).replace(cache_file)
         except BaseException:
             Path(f.name).unlink(missing_ok=True)
