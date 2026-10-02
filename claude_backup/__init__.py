@@ -120,7 +120,7 @@ class Client:
                     r.request_info,
                     r.history,
                     status=r.status,
-                    message=r.reason or "",
+                    message=await r.text() if r.status == 404 else r.reason or "",
                     headers=r.headers,
                 )
 
@@ -913,9 +913,19 @@ class Syncer:
             print(f"Fetching chats for organization {organization}", file=sys.stderr)
             yield organization
 
-    async def fetches(self) -> AsyncGenerator[Awaitable[Chat | File], None]:
-        async def fetch_new_chat(entry: ChatsEntry, old_chat: Chat | None) -> Chat:
-            chat = await entry.fetch_chat()
+    async def fetches(
+        self,
+    ) -> AsyncGenerator[Awaitable[Chat | ChatsEntry | File], None]:
+        async def fetch_new_chat(
+            entry: ChatsEntry, old_chat: Chat | None
+        ) -> Chat | ChatsEntry:
+            try:
+                chat = await entry.fetch_chat()
+            except ClientResponseError as e:
+                if e.status == 404 and "chat_conversation_not_found" in e.message:
+                    return entry
+                else:
+                    raise
 
             if old_chat and old_chat.store_path() != chat.store_path():
                 old_chat.delete_cached()
@@ -941,11 +951,20 @@ class Syncer:
                     yield file.fetch()
 
     async def sync_all(self) -> None:
+        gone: list[ChatsEntry] = []
+
         async with aclosing(
             as_completed(self.fetches(), self.connections, self.success_delay)
         ) as tasks:
             async for task in tasks:
-                await task
+                result = await task
+                if isinstance(result, ChatsEntry):
+                    gone.append(result)
+
+        for entry in gone:
+            entry.chat_list.get_data().pop(entry.uuid, None)
+        for chat_list in {entry.chat_list for entry in gone}:
+            chat_list.save()
 
 
 @dataclass(slots=True)
