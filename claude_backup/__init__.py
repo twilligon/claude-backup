@@ -857,7 +857,7 @@ async def as_completed(
 class Syncer:
     client: Client
     store: Store
-    connections: int = 6
+    connections: int = 1
     success_delay: float = 0.25
 
     async def get_organizations(self) -> AsyncGenerator[Organization]:

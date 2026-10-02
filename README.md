@@ -8,7 +8,7 @@ Unofficial, unsanctioned tool to back up [Claude.ai](https://claude.ai) chats to
 
 `claude-backup` creates a full local copy of all content of all branches of all chats accessible to your [Claude.ai](https://claude.ai) account. If you are a member of multiple "organizations", it fetches chats from all of them. We preserve all metadata on chats and their provenance, including that of their parent organization and account. We automatically rename our local copies of accounts, organizations, and chats to match their current names on Claude.ai.
 
-We use an incremental sync algorithm to fetch only chats created or updated since the last backup. The fetch is done in parallel, with a typical user agent and polite rate and connection limits such that it's less traffic than manually scrolling through your chats and opening each in a new browser tab. I of course can't guarantee Big Claude won't be after you if you run this unofficial tool, but empirically they don't seem to mind.
+We use an incremental sync algorithm to fetch only chats created or updated since the last backup. The fetch is done with a typical user agent and polite rate and connection limits such that it's less traffic than manually scrolling through your chats and opening each in a new browser tab. (If the Cloudflare gods smile on your IP, speed can be increased with moderate parallelism, e.g. `--connections 6`.) I of course can't guarantee Big Claude won't be after you if you run this unofficial tool, but empirically they don't seem to mind.
 
 To convert the saved JSON to Markdown (e.g. for feeding chats back to a model), see the companion tool [`claude2md`](https://github.com/twilligon/claude2md).
 
@@ -63,7 +63,7 @@ Chats are stored as their original API JSON with nice `find`able names and `grep
 
 ## Limitations
 
-This read-only tool is the product of reverse-engineering Claude.ai's internal API (for Good, not Evil---please don't ban me Anthropic 🙏) so I can't make any guarantees `claude-backup` will continue to work. That said, we make few assumptions about the API schema, and everything works as of 2026-09-04. I'll likely update this best-effort when things break. Barring that, PRs welcome ;)
+This read-only tool is the product of reverse-engineering Claude.ai's internal API (for Good, not Evil---please don't ban me Anthropic 🙏) so I can't make any guarantees `claude-backup` will continue to work. That said, we make few assumptions about the API schema, and everything works as of 2026-10-02. I'll likely update this best-effort when things break. Barring that, PRs welcome ;)
 
 For reliable and comprehensive backups even through minor API changes, we save raw JSON responses from the API instead of normalizing them to some fixed schema. This should be a bit more resilient than forcing everything into some internal data model that could diverge from that of Claude.ai, but it means we don't necessarily download all resources referenced by API objects other than what's necessary to list and fetch chat content. In practice, this preserves all regular chat content, but not necessarily container uploads, "advanced research" reports, etc.
 
@@ -113,7 +113,7 @@ The bleeding-edge way:
       -h, --help            show this help message and exit
       -v, --version         show program's version number and exit
       -c, --connections CONNECTIONS
-                            Maximum concurrent connections (default: 6)
+                            Maximum concurrent connections (default: 1)
       -d, --success-delay DELAY
                             Delay after successful request in seconds (default:
                             0.25)
