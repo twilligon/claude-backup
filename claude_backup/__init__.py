@@ -177,18 +177,6 @@ class Store:
     def __post_init__(self) -> None:
         self.store_dir = self.backup_dir / "0.1.13"
         self.backup_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-
-        version_file = self.backup_dir / "version"
-        if version_file.is_file() and (
-            version := version_file.read_text(encoding="utf-8").strip()
-        ):
-            old_dir = self.backup_dir / version
-            old_dir.mkdir(mode=0o700, exist_ok=True)
-            for entry in self.backup_dir.iterdir():
-                if entry not in (old_dir, version_file):
-                    entry.rename(old_dir / entry.name)
-            version_file.rename(old_dir / version_file.name)
-
         self.store_dir.mkdir(mode=0o700, exist_ok=True)
 
     def rename(self, old_path: Path, new_path: Path) -> bool:
