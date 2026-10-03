@@ -34,3 +34,9 @@ claude-backup = "claude_backup:main"
 
 [project.urls]
 Repository = "https://github.com/twilligon/claude-backup"
+
+[tool.basedpyright]
+reportAny = false
+reportExplicitAny = false
+reportImplicitOverride = false
+reportUnusedCallResult = false

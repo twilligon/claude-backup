@@ -1,8 +1,5 @@
 """Unofficial, unsanctioned tool to back up Claude.ai chats to local files."""
 
-# pyright: reportAny=false, reportExplicitAny=false
-# pyright: reportImplicitOverride=false, reportUnusedCallResult=false
-
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
 from asyncio import Task
 from collections.abc import (
