@@ -12,7 +12,7 @@ from collections.abc import (
 )
 from contextlib import aclosing, contextmanager, suppress
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from io import BytesIO, TextIOWrapper
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -219,6 +219,13 @@ class Store:
             cache_file.open(encoding="utf-8") as f,
         ):
             return cast(dict[str, Json], json.load(f))
+
+    def mtime(self, path: Path) -> datetime | None:
+        with suppress(FileNotFoundError, NotADirectoryError):
+            return datetime.fromtimestamp(
+                (self.store_dir / path).stat().st_mtime, timezone.utc
+            )
+        return None
 
     def delete(self, path: Path) -> None:
         file = self.store_dir / path
@@ -538,6 +545,10 @@ class ChatsEntry(Timestamped, Nameable, Immutable):
 
     def load_chat(self) -> Chat | None:
         return Chat._load(self.chat_list, store_path=self.chat_store_path())
+
+    def chat_mtime(self) -> datetime | None:
+        path = self.chat_store_path()
+        return self.store.mtime(path.with_name(path.name + ".json"))
 
     async def fetch_chat(self) -> Chat:
         return await Chat._fetch(self.chat_list, api_path=self.chat_api_path())
@@ -941,6 +952,8 @@ class Syncer:
                 # fetch_new_chat, since Chats.new_entries might finish and save
                 # the new entry over old_entry!
                 old_entry = entry.chat_list.entry(entry.uuid)
+                if old_entry and old_entry.chat_mtime() == entry.updated_at:
+                    continue
                 old_chat = old_entry.load_chat() if old_entry else None
                 if old_chat and old_chat.updated_at == entry.updated_at:
                     continue
