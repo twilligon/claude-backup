@@ -617,12 +617,11 @@ class Chats(APIObject):
             page = cast(list[dict[str, Json]], response["data"])
             has_more = cast(bool, response["has_more"])
 
-            skip = 0
             if last is not None:
-                for skip, raw in enumerate(page):
+                for i, raw in enumerate(page):
                     if raw["uuid"] == last["uuid"]:
                         if raw["updated_at"] != last["updated_at"]:
-                            self.unseen = offset + skip
+                            self.unseen = offset + i
                         break
                     else:
                         self.unseen += 1
@@ -633,7 +632,7 @@ class Chats(APIObject):
                     continue
 
             done = False
-            for raw in page[skip:]:
+            for raw in page:
                 entry = ChatsEntry(self).set_data(raw)
                 uuid = entry.uuid
 
