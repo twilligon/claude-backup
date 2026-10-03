@@ -606,7 +606,7 @@ class Chats(APIObject):
         offset = 0
         limit = self.unseen + 1 if self.unseen else page_size
         self.unseen = 0
-        last: Json = None
+        last: dict[str, Json] | None = None
 
         assert limit > 0
 
@@ -618,12 +618,15 @@ class Chats(APIObject):
             page = cast(list[dict[str, Json]], response["data"])
             has_more = cast(bool, response["has_more"])
 
+            skip = 0
             if last is not None:
-                for raw in page:
-                    if raw["uuid"] == last:
+                for skip, raw in enumerate(page):
+                    if raw["uuid"] == last["uuid"]:
+                        if raw["updated_at"] != last["updated_at"]:
+                            self.unseen = offset + skip
                         break
-
-                    self.unseen += 1
+                    else:
+                        self.unseen += 1
                 else:
                     offset = 0
                     last = None
@@ -631,7 +634,7 @@ class Chats(APIObject):
                     continue
 
             done = False
-            for raw in page:
+            for raw in page[skip:]:
                 entry = ChatsEntry(self).set_data(raw)
                 uuid = entry.uuid
 
@@ -662,7 +665,9 @@ class Chats(APIObject):
                     #
                     # so in case the cartesian daemon of claude chats is out to
                     # get us, we need to yield B' even if we wouldn't yield B.
+                    del new[uuid]
                     if entry.updated_at == new_entry.updated_at:
+                        new[uuid] = entry
                         continue
                 elif (
                     stored := self._data.get(uuid)
@@ -671,8 +676,9 @@ class Chats(APIObject):
                 ).updated_at:
                     # entry was in a chronological list of ones we already had,
                     # so we must also have all entries before it, so we're done
+                    self._data[uuid] = raw
                     done = True
-                    break
+                    continue
 
                 new[uuid] = entry
                 yield entry
@@ -687,7 +693,7 @@ class Chats(APIObject):
             # if not, double it and give it to the next person
             if page:
                 offset += len(page) - 1
-                last = page[-1]["uuid"]
+                last = page[-1]
             limit *= 2
 
         # dicts preserve order, but because there is no dict.prepend(), we need
