@@ -41,3 +41,8 @@ reportAny = false
 reportExplicitAny = false
 reportImplicitOverride = false
 reportUnusedCallResult = false
+
+[dependency-groups]
+dev = [
+    "basedpyright>=1.40.1",
+]
