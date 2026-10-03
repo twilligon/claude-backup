@@ -168,11 +168,13 @@ T_APIObject = TypeVar("T_APIObject", bound="APIObject")
 
 @dataclass(slots=True)
 class Store:
+    COMPAT_VERSION: ClassVar[str] = "0.1.13"
+
     backup_dir: Path
     store_dir: Path = field(init=False)
 
     def __post_init__(self) -> None:
-        self.store_dir = self.backup_dir / "0.1.13"
+        self.store_dir = self.backup_dir / self.COMPAT_VERSION
         self.backup_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.store_dir.mkdir(mode=0o700, exist_ok=True)
 
