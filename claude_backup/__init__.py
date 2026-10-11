@@ -346,12 +346,16 @@ class Nameable(APIObject):
         return self.uuid
 
     def print(self) -> None:
-        name = self.name or ""
+        name = " ".join((self.name or "").split())
 
+        columns = None
         if sys.stdout.isatty():
-            max_len = shutil.get_terminal_size().columns - 36 - 4
-            if len(name) > max_len:
-                name = name[: max_len - 1] + "…"
+            with suppress(AttributeError, OSError):
+                columns = os.get_terminal_size(sys.stdout.fileno()).columns
+        if columns:
+            width = max(20, columns - len(f"{self.uuid}\t".expandtabs()))
+            if len(name) > width:
+                name = name[: width - 1].rstrip() + "…"
 
         print(f"{self.uuid}\t{name}")
 
