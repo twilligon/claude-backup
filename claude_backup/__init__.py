@@ -12,12 +12,12 @@ from collections.abc import (
 )
 from contextlib import aclosing, contextmanager, suppress
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from io import BytesIO, TextIOWrapper
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from types import TracebackType
-from typing import IO, Any, ClassVar, TypeAlias, TypeVar, cast, final
+from typing import IO, Any, ClassVar, Self, TypeAlias, TypeVar, cast, final
 from urllib.parse import quote
 from uuid import UUID
 import asyncio
@@ -163,9 +163,6 @@ JSON_ARGS: dict[str, Any] = {
 }
 
 
-T_APIObject = TypeVar("T_APIObject", bound="APIObject")
-
-
 @dataclass(slots=True)
 class Store:
     COMPAT_VERSION: ClassVar[str] = "0.1.13"
@@ -224,9 +221,7 @@ class Store:
 
     def mtime(self, path: Path) -> datetime | None:
         with suppress(FileNotFoundError, NotADirectoryError):
-            return datetime.fromtimestamp(
-                (self.store_dir / path).stat().st_mtime, timezone.utc
-            )
+            return datetime.fromtimestamp((self.store_dir / path).stat().st_mtime, UTC)
         return None
 
     def delete(self, path: Path) -> None:
@@ -264,7 +259,7 @@ class APIObject:
     def get_mtime(self) -> datetime | None:
         return None
 
-    def set_data(self: T_APIObject, data: dict[str, Json]) -> T_APIObject:
+    def set_data(self, data: dict[str, Json]) -> Self:
         self._data = data
         return self
 
@@ -276,10 +271,10 @@ class APIObject:
 
     @classmethod
     def _load(
-        cls: type[T_APIObject],
+        cls,
         *args: Any,
         store_path: Path | None = None,
-    ) -> T_APIObject | None:
+    ) -> Self | None:
         obj = cls(*args)
         path = store_path or obj.store_path()
         data = obj.store.load(path.with_name(path.name + ".json"))
@@ -290,15 +285,15 @@ class APIObject:
 
     @classmethod
     async def _fetch(
-        cls: type[T_APIObject],
+        cls,
         *args: Any,
         api_path: str | None = None,
-    ) -> T_APIObject:
+    ) -> Self:
         obj = cls(*args)
         data = await obj.client.refresh(api_path or obj.api_path())
         return obj.set_data(data).save()
 
-    def save(self: T_APIObject) -> T_APIObject:
+    def save(self) -> Self:
         path = self.store_path()
         with self.store.save(
             path.with_name(path.name + ".json"), self.get_mtime()
@@ -366,17 +361,11 @@ class Timestamped(APIObject):
 
     @property
     def created_at(self) -> datetime:
-        # the .replace("Z", ...) is for Python <3.11, which doesn't accept
-        # the trailing-Z form fromisoformat() that claude.ai uses
-        return datetime.fromisoformat(
-            cast(str, self._data["created_at"]).replace("Z", "+00:00")
-        )
+        return datetime.fromisoformat(cast(str, self._data["created_at"]))
 
     @property
     def updated_at(self) -> datetime:
-        return datetime.fromisoformat(
-            cast(str, self._data["updated_at"]).replace("Z", "+00:00")
-        )
+        return datetime.fromisoformat(cast(str, self._data["updated_at"]))
 
     def get_mtime(self) -> datetime:
         return self.updated_at
