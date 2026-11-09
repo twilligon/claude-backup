@@ -75,7 +75,11 @@ For Chrome et al., go to https://claude.ai in your browser, open **Developer too
 
 Your platform's equivalent of `wl-paste` might vary; I'm sure Claude knows what you should use ;) As this tool demonstrates **anyone with this cookie is authenticated as you on `claude.ai`** so be careful and never give this to anyone or anything you do not trust!
 
-`claude.ai` is behind Cloudflare, and `claude-backup` can be unreliable behind a VPN. I swore to myself I was off the scrape-things-that-don't-want-to-be-scraped grind, so I recommend running `claude-backup` from a non-sus IP, bumping `--success-delay`, and lowering `--connections`. Any further workarounds are left as an exercise for the reader...
+The API we back up from doesn't return everything: notably, it leaves out the text of web pages Claude searched or fetched. Claude.ai's official data export (**Settings** > **Privacy** > **Export data**) does have it, so `claude-backup-import` saves an export's chats next to the backup, under `export`, as an export doesn't say which organization it's from:
+
+    $ claude-backup-import ~/Downloads/conversations-*.zip
+
+Finally, `claude.ai` is behind Cloudflare, and `claude-backup` can be unreliable behind a VPN. I promised myself I was off the scrape-things-that-don't-want-to-be-scraped grind, so I recommend running `claude-backup` from a non-sus IP, bumping `--success-delay`, and lowering `--connections`. Any further workarounds are left as an exercise for the reader...
 
 ## Install
 

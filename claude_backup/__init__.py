@@ -20,6 +20,7 @@ from types import TracebackType
 from typing import IO, Any, ClassVar, Self, TypeAlias, TypeVar, cast, final
 from urllib.parse import quote
 from uuid import UUID
+from zipfile import ZipFile, is_zipfile
 import asyncio
 import json
 import os
@@ -43,6 +44,9 @@ __all__ = (
     "__version__",
     "main",
     "run",
+    "import_main",
+    "run_import",
+    "import_chats",
     "Client",
     "Store",
     "Syncer",
@@ -52,6 +56,7 @@ __all__ = (
     "Timestamped",
     "Account",
     "Membership",
+    "SomeOrganization",
     "Organization",
     "Chats",
     "ChatsEntry",
@@ -574,10 +579,10 @@ class ChatsEntry(Timestamped, Nameable, Immutable):
 class Chats(APIObject):
     __slots__ = ("organization", "unseen")
 
-    organization: "Organization"
+    organization: "SomeOrganization"
     unseen: int
 
-    def __init__(self, organization: "Organization"):
+    def __init__(self, organization: "SomeOrganization"):
         self.organization = organization
         self.unseen = 0
         self._data = {}
@@ -742,22 +747,36 @@ class Chats(APIObject):
                 yield entry
 
 
+class SomeOrganization(APIObject):
+    # an organization, whichever it is: chats from claude.ai's official data
+    # exports don't say, so the store keeps them apart from any we know
+    __slots__: tuple[str, ...] = ("_store",)
+
+    _store: Store
+
+    def __init__(self, store: Store):
+        self._store = store
+
+    def store_path(self) -> Path:
+        return Path("export")
+
+    def chat_list(self) -> Chats:
+        return Chats._load(self) or Chats(self)
+
+
 @final
-class Organization(Nameable):
+class Organization(SomeOrganization, Nameable):
     __slots__ = ("account",)
 
     account: "Account"
 
     def __init__(self, account: "Account"):
+        super().__init__(account.store)
         self.account = account
 
     @property
     def client(self) -> Client:
         return self.account.client
-
-    @property
-    def store(self) -> Store:
-        return self.account.store
 
     def api_path(self) -> str:
         return f"organizations/{self.uuid}"
@@ -769,11 +788,46 @@ class Organization(Nameable):
     def capabilities(self) -> list[str]:
         return cast(list[str], self._data["capabilities"])
 
-    def chat_list(self) -> Chats:
-        return Chats._load(self) or Chats(self)
-
     def file_list(self) -> Files:
         return Files._load(self) or Files(self)
+
+
+def import_chats(store: Store, archive: ZipFile) -> Iterator[Chat]:
+    chat_list = SomeOrganization(store).chat_list()
+    entries = chat_list.get_data()
+    stale: list[Path] = []
+
+    with archive.open("conversations.json") as f:
+        chats = cast(list[dict[str, Json]], json.load(f))
+
+    for raw in chats:
+        chat = Chat(chat_list).set_data(raw)
+        if old := chat_list.entry(chat.uuid):
+            if old.updated_at > chat.updated_at:
+                continue
+            if old.chat_store_path() != chat.store_path():
+                stale.append(old.chat_store_path())
+
+        chat.save()
+        entries[chat.uuid] = {
+            key: value for key, value in raw.items() if key != "chat_messages"
+        }
+        yield chat
+
+    # as in Chats.new_entries(), keep entries in chronological order
+    chat_list.set_data(
+        dict(
+            sorted(
+                entries.items(),
+                key=lambda item: ChatsEntry(chat_list)
+                .set_data(cast(dict[str, Json], item[1]))
+                .updated_at,
+            )
+        )
+    ).save()
+
+    for path in stale:
+        store.delete(path.with_name(path.name + ".json"))
 
 
 @final
@@ -1089,6 +1143,59 @@ async def _run(argv: Sequence[str], keys: Iterable[str]) -> None:
 
 def run(argv: Sequence[str], keys: Iterable[str]) -> None:
     asyncio.run(_run(argv, keys))
+
+
+def run_import(argv: Sequence[str]) -> None:
+    parser = ArgumentParser(
+        prog="claude-backup-import",
+        description="Import Claude.ai data exports into a backup",
+        formatter_class=ArgumentDefaultsHelpFormatter,
+    )
+    parser.add_argument(
+        "-v",
+        "--version",
+        action="version",
+        version=f"%(prog)s {__version__}",
+    )
+    parser.add_argument(
+        "zips",
+        nargs="+",
+        metavar="zip",
+        type=Path,
+        help="Zip file from a Claude.ai data export",
+    )
+    parser.add_argument(
+        "-b",
+        "--backup-dir",
+        default=DefaultPath(user_data_dir("claude-backup")),
+        help="Directory to save backups",
+    )
+    args = parser.parse_args(argv)
+    if isinstance(args.backup_dir, DefaultPath):
+        args.backup_dir = args.backup_dir.path
+
+    for path in args.zips:
+        if not path.is_file():
+            parser.error(f"{path} is not a file")
+
+    store = Store(Path(args.backup_dir))
+
+    for path in args.zips:
+        # an export's manifest and such come along with a glob of its zips
+        if not is_zipfile(path):
+            print(f"Skipping {path}: not a zip file", file=sys.stderr)
+            continue
+        with ZipFile(path) as archive:
+            if "conversations.json" not in archive.namelist():
+                print(f"Skipping {path}: no chats", file=sys.stderr)
+                continue
+            print(f"Importing chats from {path}", file=sys.stderr)
+            for chat in import_chats(store, archive):
+                chat.print()
+
+
+def import_main() -> None:
+    run_import(sys.argv[1:])
 
 
 def main() -> None:

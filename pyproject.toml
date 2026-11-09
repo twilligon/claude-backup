@@ -30,6 +30,7 @@ dynamic = ["version", "description"]
 
 [project.scripts]
 claude-backup = "claude_backup:main"
+claude-backup-import = "claude_backup:import_main"
 
 [project.urls]
 Repository = "https://github.com/twilligon/claude-backup"
