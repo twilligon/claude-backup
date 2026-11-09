@@ -65,6 +65,27 @@ __all__ = (
 Json: TypeAlias = dict[str, "Json"] | list["Json"] | str | int | float | bool | None
 
 
+def enable_long_paths() -> bool:
+    # https://github.com/golang/go/issues/41734
+    # https://github.com/golang/go/issues/66560
+    if sys.platform != "win32":
+        return True
+    if sys.getwindowsversion().platform_version < (10, 0, 15063):  # 1703
+        return False
+
+    import ctypes
+
+    ntdll = ctypes.WinDLL("ntdll")
+    ntdll.RtlAreLongPathsEnabled.restype = ctypes.c_ubyte
+    ntdll.RtlGetCurrentPeb.restype = ctypes.c_void_p
+    if not ntdll.RtlAreLongPathsEnabled():
+        ctypes.c_ubyte.from_address(ntdll.RtlGetCurrentPeb() + 3).value |= 0x80
+    return bool(ntdll.RtlAreLongPathsEnabled())
+
+
+enable_long_paths()
+
+
 @dataclass(slots=True)
 class Client:
     session_key: str = field(repr=False)
