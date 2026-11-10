@@ -798,21 +798,19 @@ def import_chats(store: Store, archive: ZipFile) -> Iterator[Chat]:
     stale: list[Path] = []
 
     with archive.open("conversations.json") as f:
-        chats = cast(list[dict[str, Json]], json.load(f))
+        for raw in cast(list[dict[str, Json]], json.load(f)):
+            chat = Chat(chat_list).set_data(raw)
+            if old := chat_list.entry(chat.uuid):
+                if old.updated_at > chat.updated_at:
+                    continue
+                if old.chat_store_path() != chat.store_path():
+                    stale.append(old.chat_store_path())
 
-    for raw in chats:
-        chat = Chat(chat_list).set_data(raw)
-        if old := chat_list.entry(chat.uuid):
-            if old.updated_at > chat.updated_at:
-                continue
-            if old.chat_store_path() != chat.store_path():
-                stale.append(old.chat_store_path())
-
-        chat.save()
-        entries[chat.uuid] = {
-            key: value for key, value in raw.items() if key != "chat_messages"
-        }
-        yield chat
+            chat.save()
+            entries[chat.uuid] = {
+                key: value for key, value in raw.items() if key != "chat_messages"
+            }
+            yield chat
 
     # as in Chats.new_entries(), keep entries in chronological order
     chat_list.set_data(
@@ -1183,11 +1181,9 @@ def run_import(argv: Sequence[str]) -> None:
     for path in args.zips:
         # an export's manifest and such come along with a glob of its zips
         if not is_zipfile(path):
-            print(f"Skipping {path}: not a zip file", file=sys.stderr)
             continue
         with ZipFile(path) as archive:
             if "conversations.json" not in archive.namelist():
-                print(f"Skipping {path}: no chats", file=sys.stderr)
                 continue
             print(f"Importing chats from {path}", file=sys.stderr)
             for chat in import_chats(store, archive):
