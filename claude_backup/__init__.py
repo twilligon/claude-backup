@@ -1,7 +1,6 @@
 """Unofficial, unsanctioned tool to back up Claude.ai chats to local files."""
 
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
-from asyncio import Task
 from collections.abc import (
     AsyncGenerator,
     Awaitable,
@@ -17,26 +16,31 @@ from io import BytesIO, TextIOWrapper
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from types import TracebackType
-from typing import IO, Any, ClassVar, Self, TypeAlias, TypeVar, cast, final
+from typing import (
+    IO,
+    TYPE_CHECKING,
+    Any,
+    ClassVar,
+    Self,
+    TypeAlias,
+    TypeVar,
+    cast,
+    final,
+)
 from urllib.parse import quote
 from uuid import UUID
 from zipfile import ZipFile, is_zipfile
-import asyncio
 import json
 import os
 import shutil
 import sys
 
-from fake_useragent import UserAgent
 from platformdirs import user_data_dir
-from aiohttp import (
-    ClientResponseError,
-    ClientSession,
-    ClientTimeout,
-    CookieJar,
-    TCPConnector,
-)
-from yarl import URL
+
+if TYPE_CHECKING:
+    from asyncio import Task
+
+    from aiohttp import ClientSession
 
 __version__ = "0.1.17"
 
@@ -97,9 +101,13 @@ class Client:
     retries: int = 10
     min_retry_delay: float = 1.0
     max_retry_delay: float = 60.0
-    session: ClientSession = field(init=False)
+    session: "ClientSession" = field(init=False)
 
     def __post_init__(self):
+        from aiohttp import ClientSession, ClientTimeout, CookieJar, TCPConnector
+        from fake_useragent import UserAgent
+        from yarl import URL
+
         headers = {"User-Agent": UserAgent().chrome}
 
         jar = CookieJar()
@@ -126,6 +134,8 @@ class Client:
         return await self.session.__aexit__(exc_type, exc_val, exc_tb)
 
     async def _download(self, path: str, sink: IO[bytes]) -> None:
+        from aiohttp import ClientResponseError
+
         # i have never seen a 429 or in fact a 4xx error of any kind from this
         # api, nor ratelimit headers or fields on the returned stuff (i've seen
         # 403 Forbidden from cloudflare, in front of claude.ai, but only behind
@@ -153,6 +163,10 @@ class Client:
                 sink.write(chunk)
 
     async def download(self, path: str, sink: IO[bytes]) -> None:
+        import asyncio
+
+        from aiohttp import ClientResponseError
+
         retry_delay = self.min_retry_delay
         for retry in range(self.retries - 1):
             try:
@@ -465,6 +479,8 @@ class File(Timestamped, Nameable):
         return self.file_list.store_path() / self.slug()
 
     async def fetch(self) -> "File":
+        from aiohttp import ClientResponseError
+
         with self.store.save(self.store_path(), self.get_mtime()) as f:
             try:
                 await self.client.download(self.api_path(), f)
@@ -899,7 +915,9 @@ async def as_completed(
     source: AsyncGenerator[Awaitable[T], None],
     limit: int,
     delay: float = 0.0,
-) -> AsyncGenerator[Task[T], None]:
+) -> AsyncGenerator["Task[T]", None]:
+    import asyncio
+
     pending: set[Task[T]] = set()
 
     try:
@@ -997,6 +1015,8 @@ class Syncer:
     async def fetches(
         self,
     ) -> AsyncGenerator[Awaitable[Chat | ChatsEntry | File], None]:
+        from aiohttp import ClientResponseError
+
         async def fetch_new_chat(
             entry: ChatsEntry, old_chat: Chat | None
         ) -> Chat | ChatsEntry:
@@ -1140,6 +1160,8 @@ async def _run(argv: Sequence[str], keys: Iterable[str]) -> None:
 
 
 def run(argv: Sequence[str], keys: Iterable[str]) -> None:
+    import asyncio
+
     asyncio.run(_run(argv, keys))
 
 
